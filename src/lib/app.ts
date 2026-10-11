@@ -7,7 +7,7 @@
  */
 
 import { FlowActions, type FlowActionsContext } from './actions';
-import { APP_NAME } from './constants';
+import { APP_NAME, STORAGE_KEY } from './constants';
 import { emptyWorkspace, esc, FlowDomain, seed } from './domain';
 import {
   HOOKS,
@@ -221,6 +221,25 @@ export class BlackitFlowApp {
       renderWelcome: () => self.renderWelcome(),
       toast: (message) => self.toast(message),
       commit: () => self.sync.flushNow(self.domain.workspace),
+      resetSharedWorkspace: async () => {
+        // Stop the sync loop first, or a queued write could re-create the data
+        // immediately after it is deleted.
+        self.sync.stop();
+        try {
+          await self.host.clear();
+        } catch (error) {
+          self.syncError(error);
+        }
+        try {
+          localStorage.removeItem(STORAGE_KEY);
+        } catch {
+          /* private mode — the in-memory reset below still applies */
+        }
+        // A full reload is the only honest "fresh" state: it re-runs the load
+        // path against an empty backend rather than guessing at one. Guarded
+        // so a non-browser environment can still exercise the reset.
+        if (typeof window.location?.reload === 'function') window.location.reload();
+      },
       openModal: (title, body, footer) => {
         const modal = document.querySelector<HTMLElement>(HOOKS.modal);
         if (!modal) return;
@@ -366,13 +385,16 @@ export class BlackitFlowApp {
    */
   replaceDomain(mode: 'demo' | 'fresh'): FlowDomain {
     const current = this.domain.workspace;
+    // A "fresh" reset empties everything. Carrying the members over meant the
+    // next write pushed them back to the shared database, so a reset could
+    // never actually clear the team.
     const blank: Workspace = {
       ...emptyWorkspace(),
       mode: mode === 'demo' ? 'demo' : 'live',
-      setup: true,
-      workspaceId: current.workspaceId,
-      members: mode === 'demo' ? [] : current.members.map((m) => ({ ...m })),
-      me: current.me,
+      setup: mode === 'demo',
+      workspaceId: mode === 'demo' ? current.workspaceId : null,
+      members: [],
+      me: null,
       fMember: 'all',
       fStatus: 'all',
       composer: 1,

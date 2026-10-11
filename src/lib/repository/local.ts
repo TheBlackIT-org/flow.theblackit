@@ -98,8 +98,11 @@ export class LocalRepository implements WorkspaceRepository {
     return this.activity.slice(0, limit);
   }
 
-  /** Used by tests and the "reset to fresh" path. */
-  clear(): void {
+  /**
+   * Used by tests and the "reset to fresh" path. Async to match the shared
+   * repository, which has real rows to delete.
+   */
+  async clear(): Promise<void> {
     try {
       this.storage?.removeItem(STORAGE_KEY);
       this.storage?.removeItem(this.activityKey);

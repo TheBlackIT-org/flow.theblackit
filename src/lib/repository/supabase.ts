@@ -217,6 +217,51 @@ export class SupabaseRepository implements WorkspaceRepository {
     return stored ?? seeded;
   }
 
+  /**
+   * Empty the shared workspace.
+   *
+   * Children first: tasks reference projects, subtasks reference tasks, so
+   * deleting a parent first would be rejected by the foreign keys. PostgREST
+   * also refuses an unfiltered DELETE, hence the always-true predicate.
+   */
+  async clear(): Promise<void> {
+    const id = await this.ensureWorkspaceId();
+    if (id) {
+      const projectIds = (
+        await this.client.from('projects').select('id').eq('workspace_id', id)
+      ).data as Array<{ id: string }> | null;
+      const taskIds = projectIds?.length
+        ? ((
+            await this.client
+              .from('tasks')
+              .select('id')
+              .in('project_id', projectIds.map((p) => p.id))
+          ).data as Array<{ id: string }> | null)
+        : [];
+
+      if (taskIds?.length) {
+        const ids = taskIds.map((t) => t.id);
+        await this.assert('subtasks', this.client.from('subtasks').delete().in('task_id', ids));
+      }
+      if (projectIds?.length) {
+        await this.assert(
+          'tasks',
+          this.client.from('tasks').delete().in('project_id', projectIds.map((p) => p.id)),
+        );
+      }
+      await this.assert('activity', this.client.from('activity').delete().eq('workspace_id', id));
+      await this.assert('projects', this.client.from('projects').delete().eq('workspace_id', id));
+      await this.assert('members', this.client.from('members').delete().eq('workspace_id', id));
+    }
+    if (id) {
+      await this.assert('workspaces', this.client.from('workspaces').delete().eq('id', id));
+    }
+
+    // The next load must see an empty database, not the cached snapshot.
+    this.synced = null;
+    this.workspaceId = null;
+  }
+
   /* ------------------------------- load ------------------------------ */
 
   async load(): Promise<Workspace | null> {

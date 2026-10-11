@@ -46,6 +46,13 @@ export interface FlowActionsContext {
    * Resolves `true` for the browser-local repository, which has nothing to send.
    */
   commit(): Promise<boolean>;
+  /**
+   * Delete the shared workspace from the backend and forget it locally.
+   *
+   * Clearing only this browser is not a reset once the data is shared — the
+   * next write would push the old members and projects straight back up.
+   */
+  resetSharedWorkspace(): Promise<void>;
   /** Inject modal markup and show it. */
   openModal(title: string, body: string, footer: string): void;
   /** Hide the modal and its scrim. */
@@ -321,7 +328,7 @@ export class FlowActions {
         break;
 
       case 'ws-fresh':
-        this.startFresh();
+        void this.startFresh();
         break;
 
       case 'ws-export':
@@ -684,13 +691,14 @@ export class FlowActions {
   }
 
   /** Wipe every project, task and member back to a blank workspace. */
-  startFresh(): void {
+  async startFresh(): Promise<void> {
     // Destructive and shared: the confirmation is the only guard, so it is not
     // skippable when confirm() is unavailable (it resolves to false there).
     const ok = this.ctx.confirm(
-      'Reset to a fresh project? All projects and tasks will be cleared for everyone.',
+      'Reset everything? Projects, tasks and teammates will be deleted for everyone.',
     );
     if (!ok) return;
+    await this.ctx.resetSharedWorkspace();
     this.replaceWorkspace('fresh');
   }
 

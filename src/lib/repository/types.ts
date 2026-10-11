@@ -64,6 +64,15 @@ export interface WorkspaceRepository {
   load(): Promise<Workspace | null>;
 
   /**
+   * Delete every row the workspace owns, returning the backend to the state a
+   * brand-new deployment is in.
+   *
+   * Clearing only the browser is not enough once the data is shared: the next
+   * write would push the old members and projects straight back up.
+   */
+  clear(): Promise<void>;
+
+  /**
    * Create the shared workspace and seed its content in one pass.
    *
    * Separate from `flush` because seeding has to set up derived server state —

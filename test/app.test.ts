@@ -525,13 +525,15 @@ describe('workspace menu', () => {
     await click($('.row[data-task="t4"] .node'));
     await click($('[data-act="wsmenu"]'));
     await click($('[data-pop="ws"] [data-act="ws-fresh"]'));
-    expect(asked).toContain('Reset to a fresh project');
+    expect(asked).toContain('Reset everything');
+    // A reset has to empty the *shared* workspace too. Keeping members behind
+    // meant the next write pushed them straight back to the database.
     expect(app.domain.workspace.tasks).toEqual([]);
     expect(app.domain.workspace.projects).toEqual([]);
-    // People survive a reset, otherwise nobody could be assigned work.
-    expect(app.domain.workspace.members.length).toBe(6);
-    // Ready to compose the first task of the new project.
-    expect(app.domain.workspace.composer).toBe(1);
+    expect(app.domain.workspace.members).toEqual([]);
+    expect(app.domain.workspace.me).toBe(null);
+    // Ready to set up from scratch.
+    expect(app.domain.workspace.setup).toBe(false);
   });
 
   it('keeps the workspace untouched when the reset is declined', async () => {

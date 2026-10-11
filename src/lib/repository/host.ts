@@ -66,6 +66,11 @@ export class RepositoryHost {
    * with the sample data so the team has something to edit rather than an
    * empty page — the seed is real, editable data from that moment on.
    */
+  /** Empty the shared workspace. Used by "Reset to a fresh project". */
+  async clear(): Promise<void> {
+    await this.repo.clear();
+  }
+
   async load(): Promise<LoadResult> {
     const existing = await this.repo.load();
 

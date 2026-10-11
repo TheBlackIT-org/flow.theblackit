@@ -98,7 +98,7 @@ export function projectMenu(): string {
     '<button class="mi" data-act="ws-export">Export data as JSON</button>' +
     '<button class="mi" data-act="ws-help">Ask the assistant</button>' +
     '<div class="sep"></div>' +
-    '<button class="mi danger" data-act="ws-fresh">Reset to a fresh project</button>' +
+    '<button class="mi danger" data-act="ws-fresh">Reset everything</button>' +
     '</div>'
   );
 }
