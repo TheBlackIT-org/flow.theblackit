@@ -1,7 +1,7 @@
 {
   "name": "blackit-flow",
   "version": "1.0.0",
-  "description": "BlackIT Flow — a single vertical task chain per project.",
+  "description": "BlackIT Flow \u2014 a single vertical task chain per project.",
   "type": "module",
   "private": true,
   "scripts": {
@@ -17,7 +17,9 @@
     "shot": "node tools/shot.mjs",
     "check:supabase": "node tools/check-supabase.mjs",
     "watch:schema": "node tools/watch-schema.mjs",
-    "check:two-clients": "node tools/check-two-clients.mjs"
+    "check:two-clients": "node tools/check-two-clients.mjs",
+    "build:deploy": "node tools/build-deploy.mjs",
+    "deploy": "node tools/build-deploy.mjs && git add -A && git commit -m \"Build\" && git push"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.117.3",

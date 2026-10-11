@@ -3,10 +3,14 @@ node_modules/
 # Secrets and local overrides. .env.example is the committed template.
 .env
 .env.local
-# `dist/` IS committed on purpose: Hostinger's Git deploy copies files and does
-# not run a build, so the built site has to be in the repository. Rebuild and
-# commit it (`npm run build`) whenever the source changes.
-# dist/
+# The build output is COMMITTED on purpose.
+#
+# Hostinger's hPanel Git deploy copies files into the document root and does
+# not run a build, so the built site has to be in the repository. `dist/` is
+# the intermediate Astro writes to; `npm run build:deploy` promotes its
+# contents (index.html, _astro/, .htaccess, …) to the root, where Apache
+# serves them. Run it before committing any source change.
+/dist/
 .astro/
 .npm-cache/
 .chrome-profile*/

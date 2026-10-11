@@ -5,6 +5,9 @@ import { defineConfig } from 'astro/config';
 export default defineConfig({
   site: 'https://flow.theblackit.com',
   output: 'static',
+  // Astro refuses `outDir: './'`, and Hostinger's Git deploy serves the
+  // repository root. `npm run build:deploy` therefore builds to `dist/` as
+  // usual and promotes the output one level up.
   server: {
     host: true,
     port: 4321,
