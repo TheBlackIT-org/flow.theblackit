@@ -1,0 +1,548 @@
+/**
+ * Supabase repository: shared Postgres + Realtime.
+ *
+ * Design notes that matter:
+ *
+ *  - `load()` reads a whole workspace snapshot once.
+ *  - `flush()` diffs against the last synced snapshot and writes only the rows
+ *    that actually changed, so an edit is a handful of upserts rather than a
+ *    rewrite of every task.
+ *  - Every write is tagged with a `mutation_id`. The origin client ignores the
+ *    echo of its own write; other clients apply it. This is what stops a
+ *    remote event from stomping on local typing.
+ *  - Reordering rewrites the `position` of several rows, so it is not treated
+ *    as an incremental event: the app resyncs instead.
+ */
+
+import { createClient } from '@supabase/supabase-js';
+import { emptyWorkspace } from '../domain';
+import type { Member, Subtask, Task, Workspace } from '../types';
+import {
+  iso,
+  memberFromRow,
+  ms,
+  memberToRow,
+  projectFromRow,
+  projectToRow,
+  str,
+  strOrNull,
+  subtaskFromRow,
+  subtaskToRow,
+  taskFromRow,
+  taskToRow,
+  type Row,
+} from './mappers';
+import type {
+  ActivityEntry,
+  ActivityRecord,
+  PresencePeer,
+  SubscribeHandlers,
+  WorkspaceRepository,
+} from './types';
+
+const ACTIVITY_LIMIT = 40;
+/** Subset of a `Workspace` that is stored server-side. */
+const TABLES = ['members', 'projects', 'tasks', 'subtasks', 'activity'] as const;
+
+/* --------------------------------- helpers -------------------------------- */
+
+const stable = (value: unknown): string => JSON.stringify(value ?? null);
+
+/* -------------------------------- repository ------------------------------- */
+
+export interface SupabaseConfig {
+  url: string;
+  anonKey: string;
+  /** Browsers remember which project they were last looking at. */
+  activeProjectStorageKey?: string;
+  /**
+   * Test seam: supply a stand-in for the Supabase client. Production always
+   * builds the real one from the URL and anon key.
+   */
+  client?: SupabaseLikeClient;
+}
+
+/** The slice of the Supabase client this repository actually uses. */
+export interface SupabaseLikeClient {
+  from(table: string): SupabaseLikeQuery;
+  rpc(fn: string, args: Record<string, unknown>): PromiseLike<{ data: unknown; error: SupabaseError | null }>;
+  channel(name: string, opts?: unknown): SupabaseLikeChannel;
+  removeChannel(channel: unknown): PromiseLike<unknown>;
+}
+
+export interface SupabaseError {
+  message: string;
+}
+
+export interface SupabaseLikeResult {
+  data: unknown;
+  error: SupabaseError | null;
+}
+
+/** PostgREST is chainable: every builder method returns the same object. */
+export interface SupabaseLikeQuery extends PromiseLike<SupabaseLikeResult> {
+  select(columns?: string): SupabaseLikeQuery;
+  insert(values: unknown): SupabaseLikeQuery;
+  upsert(values: unknown): SupabaseLikeQuery;
+  update(values: unknown): SupabaseLikeQuery;
+  delete(): SupabaseLikeQuery;
+  eq(column: string, value: unknown): SupabaseLikeQuery;
+  in(column: string, values: unknown[]): SupabaseLikeQuery;
+  order(column: string, opts?: unknown): SupabaseLikeQuery;
+  limit(count: number): SupabaseLikeQuery;
+  single(): SupabaseLikeQuery;
+}
+
+export interface SupabaseLikeChannel {
+  on(type: string, filter: unknown, cb: (payload: unknown) => void): SupabaseLikeChannel;
+  subscribe(cb: (status: string) => void): SupabaseLikeChannel;
+  track(payload: Record<string, unknown>): PromiseLike<unknown>;
+  presenceState(): Record<string, Array<Record<string, unknown>>>;
+}
+
+export class SupabaseRepository implements WorkspaceRepository {
+  readonly kind = 'supabase' as const;
+  private readonly client: SupabaseLikeClient;
+  private workspaceId: string | null = null;
+  /**
+   * True when the backend answered but its schema is absent. `load()` cannot
+   * simply throw here — returning "no workspace" is a legitimate result for a
+   * fresh project — so the two cases are reported separately.
+   */
+  private schemaMissing = false;
+  /** Last state written to / read from the server, for diffing. */
+  private synced: Workspace | null = null;
+  private activeProjectKey: string;
+  /** Set while a flush is in flight so bursts collapse into one write. */
+  private flushChain: Promise<void> = Promise.resolve();
+  private activity: ActivityRecord[] = [];
+  private nextActivityId = 1;
+
+  constructor(config: SupabaseConfig) {
+    this.client =
+      config.client ??
+      (createClient(config.url, config.anonKey, {
+        auth: { persistSession: false, autoRefreshToken: false },
+        realtime: { params: { eventsPerSecond: 20 } },
+      }) as unknown as SupabaseLikeClient);
+    this.activeProjectKey = config.activeProjectStorageKey ?? 'blackit_flow_active_project';
+  }
+
+  /** The active project choice is per browser, not shared. */
+  private readActiveProject(): string | null {
+    try {
+      return localStorage.getItem(this.activeProjectKey);
+    } catch {
+      return null;
+    }
+  }
+
+  private writeActiveProject(id: string): void {
+    try {
+      localStorage.setItem(this.activeProjectKey, id);
+    } catch {
+      /* ignore */
+    }
+  }
+
+  /** Resolve (and cache) which workspace this browser is working in. */
+  private async ensureWorkspaceId(): Promise<string | null> {
+    if (this.workspaceId) return this.workspaceId;
+    const { data, error } = await this.client
+      .from('workspaces')
+      .select('id')
+      .order('created_at', { ascending: true })
+      .limit(1);
+    if (error) {
+      // A project whose migration has not been applied answers with a generic
+      // PostgREST error. Treat that as "no workspace yet" so the first write
+      // can create one; anything else (auth, network) is a real failure.
+      if (isMissingSchemaError(error.message)) {
+        console.warn(
+          'BlackIT Flow: the database schema is missing. Run supabase/migrations/0001_init.sql. ',
+          error.message,
+        );
+        this.schemaMissing = true;
+        return null;
+      }
+      throw new Error(`Could not read workspaces: ${error.message}`);
+    }
+    const rows = (data ?? []) as Array<{ id?: string }>;
+    const id = rows[0]?.id ?? null;
+    this.workspaceId = id;
+    // A successful read proves the schema is there.
+    this.schemaMissing = false;
+    return id;
+  }
+
+  /**
+   * Create the single shared workspace row. Runs once, on the first write to a
+   * fresh project; every later write reuses the id.
+   */
+  private async createWorkspace(): Promise<string> {
+    const { data, error } = await this.client
+      .from('workspaces')
+      .insert({ name: 'BlackIT Flow', mode: 'live' })
+      .select('id')
+      .single();
+    if (error || !data) {
+      throw new Error(`Could not create the shared workspace: ${error?.message ?? 'no row returned'}`);
+    }
+    const id = (data as { id: string }).id;
+    this.workspaceId = id;
+    return id;
+  }
+
+  /**
+   * Create the workspace row, then seed projects/members/tasks.
+   *
+   * The task counter is set from the number of tasks each project holds. Doing
+   * it here (rather than in `flush`) means a seeded project's sequence starts
+   * after its existing keys instead of at zero — otherwise the first new task
+   * would collide with `NE-1`.
+   */
+  async bootstrap(ws: Workspace, name: string): Promise<Workspace> {
+    const seeded: Workspace = {
+      ...ws,
+      mode: 'live',
+      setup: true,
+      projects: ws.projects.map((p) => ({
+        ...p,
+        taskCounter: ws.tasks.filter((t) => t.projectId === p.id).length,
+      })),
+    };
+    this.synced = null; // force the first flush to write everything
+    await this.flush(seeded, 'bootstrap');
+    const stored = await this.load();
+    return stored ?? seeded;
+  }
+
+  /* ------------------------------- load ------------------------------ */
+
+  async load(): Promise<Workspace | null> {
+    const id = await this.ensureWorkspaceId();
+    if (!id) return null;
+
+    const [members, projects, tasks, subtasks] = await Promise.all([
+      this.client.from('members').select('*').eq('workspace_id', id),
+      this.client.from('projects').select('*').eq('workspace_id', id),
+      this.client.from('tasks').select('*').order('position', { ascending: true }),
+      this.client.from('subtasks').select('*').order('position', { ascending: true }),
+    ]);
+
+    const firstError = [members, projects, tasks, subtasks].find((r) => r.error)?.error;
+    if (firstError) throw new Error(`Could not read the workspace: ${firstError.message}`);
+
+    const memberRows = (members.data ?? []) as Row[];
+    const projectRows = (projects.data ?? []) as Row[];
+    const taskRows = (tasks.data ?? []) as Row[];
+    const subtaskRows = (subtasks.data ?? []) as Row[];
+
+    // The workspace is genuinely empty: create it and return what we seeded.
+    void id;
+    const projectIds = new Set(projectRows.map((p) => str(p.id)));
+    const scopedTasks = taskRows.filter((t) => projectIds.has(str(t.project_id)));
+    const taskIds = new Set(scopedTasks.map((t) => str(t.id)));
+
+    const byTask = new Map<string, Subtask[]>();
+    subtaskRows
+      .filter((s) => taskIds.has(str(s.task_id)))
+      .forEach((s) => {
+        const list = byTask.get(str(s.task_id)) ?? [];
+        list.push(subtaskFromRow(s));
+        byTask.set(str(s.task_id), list);
+      });
+
+    // `taskRows` arrives ordered by `position` (the query asks for it), and
+    // scopedTasks preserves that order. Renumber the cached positions to match
+    // array order per project: if the stored positions disagreed with the sort
+    // order — legacy rows, or several clients writing at once — a drag would
+    // otherwise compare equal and never be persisted.
+    const tasksOut: Task[] = scopedTasks.map((row) => {
+      const task = taskFromRow(row);
+      task.subs = byTask.get(task.id) ?? [];
+      return task;
+    });
+    const counters = new Map<string, number>();
+    tasksOut.forEach((task) => {
+      const next = counters.get(task.projectId) ?? 0;
+      task.position = next;
+      counters.set(task.projectId, next + 1);
+    });
+
+    const storedActive = this.readActiveProject();
+    const projectId =
+      storedActive && projectRows.some((p) => str(p.id) === storedActive)
+        ? storedActive
+        : (projectRows[0] ? str(projectRows[0].id) : null);
+
+    const ws: Workspace = {
+      ...emptyWorkspace(),
+      mode: 'live',
+      setup: true,
+      workspaceId: id,
+      members: memberRows.map(memberFromRow),
+      projects: projectRows.map(projectFromRow),
+      tasks: tasksOut,
+      projectId,
+      me: memberRows[0] ? str(memberRows[0].id) : null,
+    };
+
+    this.synced = clone(ws);
+    return ws;
+  }
+
+  /* ------------------------------- flush ----------------------------- */
+
+  async flush(ws: Workspace, mutationId: string): Promise<void> {
+    // Serialise flushes so two rapid edits cannot interleave their diffs.
+    const run = this.flushChain.then(() => this.doFlush(ws, mutationId));
+    this.flushChain = run.catch(() => {});
+    return run;
+  }
+
+  private async doFlush(ws: Workspace, mutationId: string): Promise<void> {
+    // A brand-new project has no workspace row yet, so the very first write
+    // creates it before anything can reference it.
+    const id = ws.workspaceId ?? this.workspaceId ?? (await this.ensureWorkspaceId()) ?? (await this.createWorkspace());
+    this.workspaceId = id;
+    ws.workspaceId = id;
+    const prev = this.synced;
+    const tag = { mutation_id: mutationId };
+
+    const nextProjects = index(ws.projects);
+    const nextMembers = index(ws.members);
+    const nextTasks = index(ws.tasks);
+    const nextSubs = index(ws.tasks.flatMap((t) => t.subs));
+    const taskPosition = new Map(ws.tasks.map((t, i) => [t.id, i]));
+    const subPosition = new Map(
+      ws.tasks.flatMap((t) => t.subs.map((s, i) => [s.id, i] as const)),
+    );
+    // Which subtask belonged to which task *before* this edit. Reading it from
+    // the new state instead would drop exactly the subtasks that were deleted,
+    // since a removed subtask has no owner to look up any more.
+    const prevTaskOfSub = new Map(
+      (prev?.tasks ?? []).flatMap((t) => t.subs.map((s) => [s.id, t.id] as const)),
+    );
+
+    const prevProjects = index(prev?.projects ?? []);
+    const prevMembers = index(prev?.members ?? []);
+    const prevTasks = index(prev?.tasks ?? []);
+    const prevSubs = index(prev?.tasks.flatMap((t) => t.subs) ?? []);
+
+    /* ---- members & projects: small tables, upsert whole rows ---- */
+    const memberRows = [...nextMembers.values()]
+      .filter((m) => stable(memberToRow(m, id)) !== stable(prevMembers.get(m.id) ? memberToRow(prevMembers.get(m.id)!, id) : null))
+      .map((m) => ({ ...memberToRow(m, id), ...tag }));
+    if (memberRows.length) await this.assert('members', this.client.from('members').upsert(memberRows));
+
+    const projectRows = [...nextProjects.values()]
+      .filter((p) => stable(projectToRow(p, id)) !== stable(prevProjects.get(p.id) ? projectToRow(prevProjects.get(p.id)!, id) : null))
+      .map((p) => ({ ...projectToRow(p, id), ...tag }));
+    if (projectRows.length) await this.assert('projects', this.client.from('projects').upsert(projectRows));
+
+    /* ---- tasks ---- */
+    // The comparison value for a task includes its array index, so a reorder
+    // is detected even though the domain does not maintain `position` itself.
+    const prevPosition = new Map((prev?.tasks ?? []).map((t, i) => [t.id, i]));
+    const taskRows = ws.tasks
+      .map((t) => taskToRow(t, taskPosition.get(t.id) ?? 0))
+      .filter((row) => {
+        const before = prevTasks.get(str(row.id));
+        return stable(row) !== stable(before ? taskToRow(before, prevPosition.get(before.id) ?? 0) : null);
+      })
+      .map((row) => ({ ...row, ...tag }));
+    if (taskRows.length) await this.assert('tasks', this.client.from('tasks').upsert(taskRows));
+
+    /* ---- subtasks ---- */
+    const subRows = ws.tasks
+      .flatMap((t) => t.subs.map((s) => subtaskToRow(s, t.id, subPosition.get(s.id) ?? 0)))
+      .filter((row) => stable(row) !== stable(prevSubs.get(str(row.id)) ? subtaskToRow(prevSubs.get(str(row.id))!, str(row.task_id), subPosition.get(str(row.id)) ?? 0) : null))
+      .map((row) => ({ ...row, ...tag }));
+    if (subRows.length) await this.assert('subtasks', this.client.from('subtasks').upsert(subRows));
+
+    /* ---- deletions, deepest first ---- */
+    const goneSubs = [...prevSubs.keys()].filter((sid) => {
+      if (nextSubs.has(sid)) return false;
+      // If its parent task also went, the foreign key cascade already removed
+      // it; deleting again would be a wasted round trip.
+      const parent = prevTaskOfSub.get(sid);
+      return parent === undefined || nextTasks.has(parent);
+    });
+    if (goneSubs.length) await this.assert('subtasks', this.client.from('subtasks').delete().in('id', goneSubs));
+
+    const goneTasks = [...prevTasks.keys()].filter((tid) => !nextTasks.has(tid));
+    if (goneTasks.length) await this.assert('tasks', this.client.from('tasks').delete().in('id', goneTasks));
+
+    const goneProjects = [...prevProjects.keys()].filter((pid) => !nextProjects.has(pid));
+    if (goneProjects.length)
+      await this.assert('projects', this.client.from('projects').delete().in('id', goneProjects));
+
+    const goneMembers = [...prevMembers.keys()].filter((mid) => !nextMembers.has(mid));
+    if (goneMembers.length)
+      await this.assert('members', this.client.from('members').delete().in('id', goneMembers));
+
+    // The server is now the same as what we hold.
+    this.synced = clone(ws);
+  }
+
+  private async assert(label: string, result: PromiseLike<{ error: { message: string } | null }>): Promise<void> {
+    const { error } = await result;
+    if (error) throw new Error(`${label} write failed: ${error.message}`);
+  }
+
+  /* ------------------------------- keys ------------------------------ */
+
+  /**
+   * Reserve the next key. Must be awaited *before* the task object is built,
+   * otherwise the row would be written with a stale key.
+   */
+  async nextTaskKey(projectId: string, fallback: () => string): Promise<string> {
+    const { data, error } = await this.client.rpc('next_task_key', { p_project_id: projectId });
+    if (error || !data) {
+      // Older deployments without the function still work, just less safely.
+      console.warn('next_task_key unavailable, falling back to a client-side count', error?.message);
+      return fallback();
+    }
+    return String(data);
+  }
+
+  /* ----------------------------- realtime ---------------------------- */
+
+  subscribe(handlers: SubscribeHandlers, me: Member | null): () => void {
+    handlers.onState('connecting');
+    const channel = this.client.channel('blackit-flow', {
+      config: { presence: { key: me?.id ?? 'anonymous' } },
+    });
+
+    (['tasks', 'subtasks', 'projects', 'members', 'activity'] as const).forEach((table) => {
+      channel.on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table },
+        (raw: unknown) => {
+          const payload = raw as { eventType?: string; new?: Row; old?: Row };
+          const type = String(payload.eventType ?? '').toUpperCase();
+          if (type !== 'INSERT' && type !== 'UPDATE' && type !== 'DELETE') return;
+          handlers.onChange({
+            table,
+            type,
+            row: (payload.new ?? {}) as Row,
+            old: (payload.old ?? {}) as Row,
+          });
+        },
+      );
+    });
+
+    channel.on('presence', { event: 'sync' }, () => {
+      const state = channel.presenceState() as Record<string, Array<Record<string, unknown>>>;
+      const peers: PresencePeer[] = [];
+      Object.values(state).forEach((entries) => {
+        entries.forEach((entry) => {
+          peers.push({
+            memberId: str(entry.memberId),
+            memberName: str(entry.memberName),
+            onlineAt: Number(entry.onlineAt ?? Date.now()),
+          });
+        });
+      });
+      handlers.onPresence(peers);
+    });
+
+    channel.subscribe((status) => {
+      if (status === 'SUBSCRIBED') {
+        handlers.onState('live');
+        if (me) {
+          void channel.track({ memberId: me.id, memberName: me.name, onlineAt: Date.now() });
+        }
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        handlers.onState('error');
+        // The socket library retries on its own; the app also resyncs on focus.
+      } else if (status === 'CLOSED') {
+        handlers.onState('offline');
+      }
+    });
+
+    return () => {
+      void this.client.removeChannel(channel);
+      handlers.onState('offline');
+    };
+  }
+
+  /* ------------------------------ activity --------------------------- */
+
+  async logActivity(entry: ActivityEntry, mutationId: string): Promise<void> {
+    const id = this.workspaceId ?? (await this.ensureWorkspaceId());
+    if (!id) return;
+    try {
+      await this.client.from('activity').insert({
+        workspace_id: id,
+        actor_id: entry.actorId,
+        actor_name: entry.actorName,
+        action: entry.action,
+        task_key: entry.taskKey ?? '',
+        summary: entry.summary ?? '',
+        mutation_id: mutationId,
+      });
+    } catch {
+      // The audit trail must never break the action it is describing.
+    }
+  }
+
+  async recentActivity(limit: number): Promise<ActivityRecord[]> {
+    const id = this.workspaceId ?? (await this.ensureWorkspaceId());
+    if (!id) return [];
+    const { data, error } = await this.client
+      .from('activity')
+      .select('*')
+      .eq('workspace_id', id)
+      .order('created_at', { ascending: false })
+      .limit(Math.min(limit, ACTIVITY_LIMIT));
+    if (error || !data) return [];
+    this.activity = (data as Row[]).map((row) => ({
+      id: Number(row.id ?? 0),
+      actorId: strOrNull(row.actor_id),
+      actorName: str(row.actor_name),
+      action: str(row.action),
+      taskKey: str(row.task_key),
+      summary: str(row.summary),
+      // The row's own timestamp. Using the local clock here made every entry in
+      // the feed read "just now", no matter how old it was.
+      createdAt: ms(row.created_at) ?? Date.now(),
+    }));
+    this.nextActivityId = (this.activity[0]?.id ?? 0) + 1;
+    return this.activity;
+  }
+
+  /**
+   * Whether the last read found the schema absent. The app uses this to tell a
+   * teammate why nothing is shared, instead of leaving it to the console.
+   */
+  get isSchemaMissing(): boolean {
+    return this.schemaMissing;
+  }
+
+  /** Diagnostics for the console: which workspace and project are active. */
+  debug(): { workspaceId: string | null; tables: readonly string[] } {
+    return { workspaceId: this.workspaceId, tables: TABLES };
+  }
+}
+
+/* --------------------------------- utils --------------------------------- */
+
+/**
+ * PostgREST reports an absent table/function with a schema-cache or
+ * "does not exist" message. Both mean "the migration has not been applied",
+ * which is a recoverable state rather than a failure.
+ */
+export function isMissingSchemaError(message: string): boolean {
+  return /schema cache|does not exist|relation .* does not exist|PGRST20[0-9]/i.test(message);
+}
+
+function index<T extends { id: string }>(list: T[]): Map<string, T> {
+  return new Map(list.map((item) => [item.id, item]));
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+

@@ -1,0 +1,53 @@
+---
+/**
+ * Static shell: the browser adapter (`src/scripts/main.ts`) takes over these
+ * elements on load and replaces their inner HTML with live workspace output.
+ */
+import { GLYPH_BRAND } from '../lib/constants';
+---
+
+<header class="top">
+  <div class="top-in">
+    <div class="brand">
+      <Fragment set:html={GLYPH_BRAND} />
+      BlackIT Flow
+    </div>
+    <div class="ctrls" id="ctrls"></div>
+    <div class="hp" id="hp"></div>
+    <div class="menu" id="wsmenu"></div>
+    <div class="live" id="live"></div>
+  </div>
+</header>
+
+<div class="setup-banner" id="setup-banner" role="status"></div>
+
+<!-- Filled only when the client script fails to start (see Layout.astro). -->
+<div class="setup-banner" id="boot-error" role="alert"></div>
+
+<div class="sub" id="sub"></div>
+
+<div class="wrap">
+  <div class="chain" id="chain"></div>
+  <div id="dropmark"></div>
+</div>
+
+<div class="welcome" id="welcome"></div>
+
+<!-- Activity feed, toggled from the header chip -->
+<div class="actpanel" id="activity-panel">
+  <div class="acthead">
+    <span>Recent activity</span>
+    <button class="btn ghost sm" data-act="activity-close" aria-label="Close activity">✕</button>
+  </div>
+  <div class="actbody" id="activity"></div>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<div class="modal" id="modal"></div>
+
+<button class="fab" id="fab" data-act="chat-toggle" aria-label="Open the assistant">
+  <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8.5 8.5 0 0 1-8.5 8.5H8.5L3.5 23l1.6-5.2A8.5 8.5 0 1 1 21 12z"/></svg>
+</button>
+
+<div class="chat" id="chat" role="dialog" aria-label="Flow assistant" aria-live="polite"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>

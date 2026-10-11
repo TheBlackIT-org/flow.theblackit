@@ -1,0 +1,33 @@
+{
+  "name": "blackit-flow",
+  "version": "1.0.0",
+  "description": "BlackIT Flow — a single vertical task chain per project.",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "astro dev",
+    "start": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "check": "astro check && tsc -p test/tsconfig.json --noEmit",
+    "typecheck:tests": "tsc -p test/tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run check && npm run test && npm run build",
+    "shot": "node tools/shot.mjs",
+    "check:supabase": "node tools/check-supabase.mjs",
+    "watch:schema": "node tools/watch-schema.mjs",
+    "check:two-clients": "node tools/check-two-clients.mjs"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
+    "astro": "^7.3.8"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "happy-dom": "^20.14.6",
+    "pgsql-ast-parser": "^12.0.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.11"
+  }
+}

@@ -1,0 +1,89 @@
+---
+/**
+ * Shell for the single-page app. The head carries the theme colour, the
+ * viewport, and a pre-hydration script that hides the static shell when the
+ * visitor has no saved workspace yet — that avoids a flash of demo content
+ * before the client takes over.
+ */
+import '../styles/flow.css';
+import { STORAGE_KEY } from '../lib/constants';
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = 'BlackIT Flow · one task chain per project',
+  description = 'BlackIT Flow is a single vertical task chain per project: every task carries its own status, nothing is forced into order, and anyone can claim work that has no owner.',
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a0b10" />
+    <!-- Internal tool: the shared database is writable by anyone holding the
+         URL, so it must not be discoverable by search engines. Remove this
+         line (and public/robots.txt) if that ever changes. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="color-scheme" content="dark" />
+    <title>{title}</title>
+    <meta name="description" content={description} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script is:inline define:vars={{ STORAGE_KEY }}>
+      // First run (no saved workspace) must not flash the demo shell.
+      try {
+        if (!localStorage.getItem(STORAGE_KEY)) document.documentElement.classList.add('first-run');
+      } catch (e) {
+        document.documentElement.classList.add('first-run');
+      }
+
+      // Failsafe. The client entry removes `first-run` when it boots, but if it
+      // never loads — a stale dependency cache, a 404, any error — the shell
+      // would stay hidden and the page would be blank with no explanation. A
+      // hidden page with no message is the worst failure, so reveal it anyway
+      // and say what to do.
+      window.addEventListener('DOMContentLoaded', () => {
+        window.setTimeout(() => {
+          if (!document.documentElement.classList.contains('first-run')) return;
+          document.documentElement.classList.remove('first-run');
+          const host = document.getElementById('boot-error');
+          if (!host) return;
+          host.innerHTML =
+            '<div class="setuprow">' +
+            '<span><b>The app did not finish starting.</b> This is usually a stale dev-server ' +
+            'cache: stop the server, delete <code>node_modules/.vite</code>, and start it again. ' +
+            'The browser console names the failing file.</span>' +
+            '</div>';
+          host.classList.add('on');
+        }, 6000);
+      });
+    </script>
+    <style is:inline>
+      /* Hold the static demo shell back until the client decides what to show. */
+      html.first-run .top,
+      html.first-run .sub,
+      html.first-run .wrap,
+      html.first-run .fab { visibility: hidden; }
+      /* Never leave the page hidden when scripting is unavailable. */
+      html.no-js .top,
+      html.no-js .sub,
+      html.no-js .wrap,
+      html.no-js .fab { visibility: visible; }
+    </style>
+    <noscript>
+      <style is:inline>
+        .top, .sub, .wrap, .fab { visibility: visible !important; }
+      </style>
+    </noscript>
+  </head>
+  <body>
+    <slot />
+  </body>
+</html>

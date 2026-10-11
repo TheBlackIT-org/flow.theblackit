@@ -1,0 +1,27 @@
+---
+/**
+ * BlackIT Flow — task-chain prototype, rebuilt in Astro.
+ *
+ * The page prerenders the shell (brand, header, assistant button, toast and
+ * modal hosts) into static HTML; `src/scripts/main.ts` then fills it in on the
+ * client, swaps in any saved workspace, and wires every interaction. Without
+ * JavaScript there is nothing interactive, which the <noscript> note says.
+ */
+import Layout from '../layouts/Layout.astro';
+import AppShell from '../components/AppShell.astro';
+---
+
+<Layout>
+  <AppShell />
+
+  <noscript>
+    <p style="max-width:640px;margin:24px auto;padding:0 22px;color:#8b95a6;font-size:13px">
+      BlackIT Flow needs JavaScript for the interactive chain (status changes, claiming
+      unowned work, subtasks and the assistant). This static view shows the layout only.
+    </p>
+  </noscript>
+
+  <script>
+    import '../scripts/main.ts';
+  </script>
+</Layout>

@@ -1,0 +1,3 @@
+# Internal tool — see the noindex meta tag in src/layouts/Layout.astro.
+User-agent: *
+Disallow: /

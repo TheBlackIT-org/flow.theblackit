@@ -1,0 +1,11 @@
+{
+  "extends": "astro/tsconfigs/strict",
+  "include": [".astro/types.d.ts", "src/**/*", "astro.config.mjs", "vitest.config.ts"],
+  "exclude": ["dist", "test"],
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["vitest/globals"],
+    "noUncheckedIndexedAccess": false,
+    "verbatimModuleSyntax": true
+  }
+}
