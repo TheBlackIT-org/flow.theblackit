@@ -12,7 +12,7 @@ import type { Workspace } from '../src/lib/types';
 import { SupabaseRepository, isMissingSchemaError } from '../src/lib/repository/supabase';
 import { RepositoryHost } from '../src/lib/repository/host';
 import { LocalRepository } from '../src/lib/repository/local';
-import { taskToRow, taskFromRow, memberFromRow } from '../src/lib/repository/mappers';
+import { taskToRow, taskFromRow, memberFromRow, projectToRow } from '../src/lib/repository/mappers';
 import { fakeSupabase, uuidFor, writesTo, type FakeSupabase } from './helpers/fake-supabase';
 
 const NOW = Date.UTC(2026, 9, 10, 12, 0, 0);
@@ -756,5 +756,33 @@ describe('a deleted workspace heals itself', () => {
 
     expect(fake.tables.workspaces.length).toBeGreaterThan(0);
     expect(fake.tables.members.length).toBeGreaterThan(0);
+  });
+});
+
+describe('a new project carries a task counter', () => {
+  it('sends task_counter: 0 on insert, because the column is NOT NULL', async () => {
+    // A project created through the UI has no counter yet. Omitting the column
+    // made the insert fail with "null value in column task_counter", so no
+    // project created in the app could ever be saved.
+    const fake = fakeSupabase({ workspaces: [{ id: WS }], members: [], projects: [], tasks: [] });
+    const supabase = new SupabaseRepository(fake, 'BlackIT Flow');
+    const ws: Workspace = {
+      ...emptyWorkspace(),
+      mode: 'live',
+      setup: true,
+      workspaceId: null,
+      projects: [{ id: uuidFor('p1'), key: 'NEW', name: 'Brand new', product: '' }],
+    };
+    await supabase.flush(ws, 'm1');
+    expect(fake.tables.projects).toHaveLength(1);
+    expect((fake.tables.projects[0] as { task_counter: number }).task_counter).toBe(0);
+  });
+
+  it('leaves an unknown counter alone on update', () => {
+    // An ordinary edit must not reset a sequence the server owns.
+    const p = { id: 'p1', key: 'K', name: 'N', product: '' };
+    expect(projectToRow(p, 'ws')).not.toHaveProperty('task_counter');
+    expect(projectToRow(p, 'ws', true)).toHaveProperty('task_counter', 0);
+    expect(projectToRow({ ...p, taskCounter: 7 }, 'ws')).toHaveProperty('task_counter', 7);
   });
 });

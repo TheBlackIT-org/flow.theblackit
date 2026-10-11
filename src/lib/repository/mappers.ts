@@ -101,7 +101,7 @@ export function memberToRow(m: Member, workspaceId: string): Row {
   };
 }
 
-export function projectToRow(p: Project, workspaceId: string): Row {
+export function projectToRow(p: Project, workspaceId: string, isNew = false): Row {
   const row: Row = {
     id: p.id,
     workspace_id: workspaceId,
@@ -109,9 +109,14 @@ export function projectToRow(p: Project, workspaceId: string): Row {
     name: p.name,
     product: p.product,
   };
-  // Only send the counter when it is known, so an ordinary edit never resets a
-  // sequence the server owns.
+  // `task_counter` is NOT NULL, so an INSERT must carry a value. A project made
+  // through the UI has no counter yet, which made every project insert fail
+  // with "null value in column task_counter".
+  //
+  // An UPDATE still omits an unknown counter, so an ordinary edit never resets
+  // a sequence the server owns.
   if (p.taskCounter !== undefined) row.task_counter = p.taskCounter;
+  else if (isNew) row.task_counter = 0;
   return row;
 }
 

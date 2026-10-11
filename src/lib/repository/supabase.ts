@@ -400,8 +400,14 @@ export class SupabaseRepository implements WorkspaceRepository {
     if (memberRows.length) await this.assert('members', this.client.from('members').upsert(memberRows));
 
     const projectRows = [...nextProjects.values()]
-      .filter((p) => stable(projectToRow(p, id)) !== stable(prevProjects.get(p.id) ? projectToRow(prevProjects.get(p.id)!, id) : null))
-      .map((p) => ({ ...projectToRow(p, id), ...tag }));
+      .map((p) => {
+        const before = prevProjects.get(p.id);
+        // `isNew` decides whether an unknown counter is sent as 0: the column
+        // is NOT NULL, so an insert without it is rejected outright.
+        return { row: projectToRow(p, id, !before), before };
+      })
+      .filter(({ row, before }) => stable(row) !== stable(before ? projectToRow(before, id) : null))
+      .map(({ row }) => ({ ...row, ...tag }));
     if (projectRows.length) await this.assert('projects', this.client.from('projects').upsert(projectRows));
 
     /* ---- tasks ---- */
