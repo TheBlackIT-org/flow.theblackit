@@ -547,3 +547,17 @@ describe('creation writes are not left in the debounce window', () => {
     expect(calls.at(-1)?.urgent).toBe(true);
   });
 });
+
+describe('first run ends when the first project exists', () => {
+  it('creating a project ends the welcome state', () => {
+    // `setup` is what hides the welcome screen. It used to be set only on
+    // load, so a workspace created in this session kept showing the welcome
+    // screen until the page was reloaded.
+    const ws = emptyWorkspace();
+    ws.mode = 'live';
+    const d = new FlowDomain(ws, { storage: null });
+    expect(d.workspace.setup).toBe(false);
+    d.createProject('The BlackIT', 'TBI', '');
+    expect(d.workspace.setup).toBe(true);
+  });
+});

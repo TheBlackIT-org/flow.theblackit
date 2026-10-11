@@ -70,6 +70,14 @@ export class BlackitFlowApp {
     ghost?: HTMLElement;
   } | null = null;
   private dropAnchor: string | null = null;
+  /**
+   * False until the initial workspace load has finished.
+   *
+   * The welcome overlay is driven by `workspace.setup`, which is only known
+   * once the backend load resolves. Rendering it before then flashed the
+   * welcome screen on every reload before the real workspace replaced it.
+   */
+  private ready = false;
 
   constructor(options: { host?: RepositoryHost; workspace?: Workspace } = {}) {
     this.host = options.host ?? new RepositoryHost(createRepository());
@@ -117,7 +125,13 @@ export class BlackitFlowApp {
             error instanceof Error ? error.message : String(error)
           }`,
         );
+      } finally {
+        // Something is always shown, even when the load fails.
+        this.ready = true;
+        this.actions.refresh();
       }
+    } else {
+      this.ready = true;
     }
 
     this.actions.refresh();
@@ -287,8 +301,9 @@ export class BlackitFlowApp {
     const el = document.querySelector<HTMLElement>(HOOKS.welcome);
     if (!el) return;
     const setup = this.domain.workspace.setup;
-    document.body.classList.toggle('booting', !setup);
-    el.classList.toggle('on', !setup);
+    // Until `ready`, hold the shell back with the loader rather than guess.
+    document.body.classList.toggle('booting', !this.ready || !setup);
+    el.classList.toggle('on', this.ready && !setup);
     el.innerHTML = renderWelcome(this.domain);
   }
 

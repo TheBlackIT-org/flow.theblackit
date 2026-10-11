@@ -96,7 +96,11 @@ export class RepositoryHost {
         ? initialWorkspace()
         : this.migrateBrowserState(seed());
     seeded.mode = this.repo.kind === 'supabase' ? 'live' : 'demo';
-    seeded.setup = true;
+    // `setup: false` means "this visitor has not started yet", which is what
+    // shows the welcome screen. An empty shared workspace is exactly that
+    // state, so it must not be forced to true — that suppressed the welcome
+    // for every first-time visitor.
+    seeded.setup = !emptyShared;
     seeded.workspaceId = null;
 
     if (this.repo.kind === 'supabase') {

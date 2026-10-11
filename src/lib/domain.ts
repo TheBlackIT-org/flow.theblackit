@@ -986,6 +986,10 @@ export class FlowDomain {
     this.workspace.fStatus = 'all';
     this.workspace.composer = 1;
     this.workspace.composerAnchor = null;
+    // Creating the first project is what ends "first run". `setup` was only
+    // ever set on load, so a workspace created in this session kept showing the
+    // welcome screen until it was reloaded.
+    this.workspace.setup = true;
     this.save({ urgent: true });
     this.emit({ action: 'project.created', summary: p.name });
     return p;
