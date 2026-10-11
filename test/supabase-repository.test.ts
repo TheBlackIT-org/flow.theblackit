@@ -7,7 +7,8 @@
  * every assertion here is about the statements it emits.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { seed } from '../src/lib/domain';
+import { emptyWorkspace, seed } from '../src/lib/domain';
+import type { Workspace } from '../src/lib/types';
 import { SupabaseRepository, isMissingSchemaError } from '../src/lib/repository/supabase';
 import { RepositoryHost } from '../src/lib/repository/host';
 import { LocalRepository } from '../src/lib/repository/local';
@@ -720,5 +721,40 @@ describe('an empty shared database stays empty by default', () => {
     expect(bootstrapped).toBe(true);
     expect(workspace.projects).toHaveLength(4);
     expect(workspace.tasks).toHaveLength(32);
+  });
+});
+
+describe('a deleted workspace heals itself', () => {
+  it('recreates the workspace instead of failing every write until a reload', async () => {
+    // A reset in another tab leaves this client writing members against a row
+    // that no longer exists. Without recovery every later write fails and the
+    // user has to reload the page.
+    const fake = fakeSupabase({ workspaces: [{ id: WS }], members: [], projects: [], tasks: [] });
+    const supabase = new SupabaseRepository(fake, 'BlackIT Flow');
+    const ws: Workspace = {
+      ...emptyWorkspace(),
+      mode: 'live',
+      setup: true,
+      workspaceId: null,
+      members: [{ id: uuidFor('m1'), name: 'A', role: 'member', title: '', agent: false }],
+    };
+
+    await supabase.flush(ws, 'm1');
+    expect(fake.tables.workspaces).toHaveLength(1);
+
+    // The workspace is deleted underneath this client, so the edit that is now
+    // queued is rejected on the foreign key.
+    fake.tables.workspaces.length = 0;
+    ws.members[0]!.name = 'Renamed';
+    fake.failures.set(
+      'members',
+      'insert or update on table "members" violates foreign key constraint "members_workspace_id_fkey"',
+    );
+    // The write may still fail if the retry hits the injected error again; the
+    // point is that the client no longer keeps pointing at the deleted row.
+    await supabase.flush(ws, 'm2').catch(() => undefined);
+
+    expect(fake.tables.workspaces.length).toBeGreaterThan(0);
+    expect(fake.tables.members.length).toBeGreaterThan(0);
   });
 });

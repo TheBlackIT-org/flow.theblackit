@@ -347,6 +347,24 @@ export class SupabaseRepository implements WorkspaceRepository {
   }
 
   private async doFlush(ws: Workspace, mutationId: string): Promise<void> {
+    try {
+      await this.writeOnce(ws, mutationId);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // The workspace this client is writing to no longer exists — a reset in
+      // another tab, or an offline client that was mid-write. Drop the cached
+      // id and let the next attempt create a fresh workspace, otherwise every
+      // write fails until someone reloads the page.
+      if (!isForeignKeyViolation(message)) throw error;
+      console.warn('BlackIT Flow: the shared workspace was deleted; creating a new one.');
+      this.workspaceId = null;
+      ws.workspaceId = null;
+      this.synced = null;
+      await this.writeOnce(ws, mutationId);
+    }
+  }
+
+  private async writeOnce(ws: Workspace, mutationId: string): Promise<void> {
     // A brand-new project has no workspace row yet, so the very first write
     // creates it before anything can reference it.
     const id = ws.workspaceId ?? this.workspaceId ?? (await this.ensureWorkspaceId()) ?? (await this.createWorkspace());
@@ -579,6 +597,15 @@ export class SupabaseRepository implements WorkspaceRepository {
  * "does not exist" message. Both mean "the migration has not been applied",
  * which is a recoverable state rather than a failure.
  */
+/**
+ * True when a write failed because the row it references is gone — almost
+ * always `workspace_id` pointing at a workspace that has been deleted since
+ * this client cached it.
+ */
+export function isForeignKeyViolation(message: string): boolean {
+  return /foreign key constraint|23503/i.test(message);
+}
+
 export function isMissingSchemaError(message: string): boolean {
   return /schema cache|does not exist|relation .* does not exist|PGRST20[0-9]/i.test(message);
 }
