@@ -3,7 +3,10 @@ node_modules/
 # Secrets and local overrides. .env.example is the committed template.
 .env
 .env.local
-dist/
+# `dist/` IS committed on purpose: Hostinger's Git deploy copies files and does
+# not run a build, so the built site has to be in the repository. Rebuild and
+# commit it (`npm run build`) whenever the source changes.
+# dist/
 .astro/
 .npm-cache/
 .chrome-profile*/

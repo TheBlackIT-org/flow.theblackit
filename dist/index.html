@@ -1,0 +1,45 @@
+<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="theme-color" content="#0a0b10"><!-- Internal tool: the shared database is writable by anyone holding the
+         URL, so it must not be discoverable by search engines. Remove this
+         line (and public/robots.txt) if that ever changes. --><meta name="robots" content="noindex, nofollow"><meta name="color-scheme" content="dark"><title>BlackIT Flow · one task chain per project</title><meta name="description" content="BlackIT Flow is a single vertical task chain per project: every task carries its own status, nothing is forced into order, and anyone can claim work that has no owner."><meta property="og:title" content="BlackIT Flow · one task chain per project"><meta property="og:description" content="BlackIT Flow is a single vertical task chain per project: every task carries its own status, nothing is forced into order, and anyone can claim work that has no owner."><meta property="og:type" content="website"><link rel="icon" href="/favicon.svg" type="image/svg+xml"><script>(function(){const STORAGE_KEY = "blackit_flow_v1";
+
+      // First run (no saved workspace) must not flash the demo shell.
+      try {
+        if (!localStorage.getItem(STORAGE_KEY)) document.documentElement.classList.add('first-run');
+      } catch (e) {
+        document.documentElement.classList.add('first-run');
+      }
+
+      // Failsafe. The client entry removes `first-run` when it boots, but if it
+      // never loads — a stale dependency cache, a 404, any error — the shell
+      // would stay hidden and the page would be blank with no explanation. A
+      // hidden page with no message is the worst failure, so reveal it anyway
+      // and say what to do.
+      window.addEventListener('DOMContentLoaded', () => {
+        window.setTimeout(() => {
+          if (!document.documentElement.classList.contains('first-run')) return;
+          document.documentElement.classList.remove('first-run');
+          const host = document.getElementById('boot-error');
+          if (!host) return;
+          host.innerHTML =
+            '<div class="setuprow">' +
+            '<span><b>The app did not finish starting.</b> This is usually a stale dev-server ' +
+            'cache: stop the server, delete <code>node_modules/.vite</code>, and start it again. ' +
+            'The browser console names the failing file.</span>' +
+            '</div>';
+          host.classList.add('on');
+        }, 6000);
+      });
+    })();</script><style>
+      /* Hold the static demo shell back until the client decides what to show. */
+      html.first-run .top,
+      html.first-run .sub,
+      html.first-run .wrap,
+      html.first-run .fab { visibility: hidden; }
+      /* Never leave the page hidden when scripting is unavailable. */
+      html.no-js .top,
+      html.no-js .sub,
+      html.no-js .wrap,
+      html.no-js .fab { visibility: visible; }
+    </style><noscript><style>
+        .top, .sub, .wrap, .fab { visibility: visible !important; }
+      </style></noscript><link rel="stylesheet" href="/_astro/index.B-yXaIIT.css"></head><body><header class="top"><div class="top-in"><div class="brand"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="4" r="2.4"/><circle cx="12" cy="12" r="2.4"/><circle cx="12" cy="20" r="2.4"/><path d="M12 6.4v3.2M12 14.4v3.2"/></svg>BlackIT Flow</div><div class="ctrls" id="ctrls"></div><div class="hp" id="hp"></div><div class="menu" id="wsmenu"></div><div class="live" id="live"></div></div></header><div class="setup-banner" id="setup-banner" role="status"></div><!-- Filled only when the client script fails to start (see Layout.astro). --><div class="setup-banner" id="boot-error" role="alert"></div><div class="sub" id="sub"></div><div class="wrap"><div class="chain" id="chain"></div><div id="dropmark"></div></div><div class="welcome" id="welcome"></div><!-- Activity feed, toggled from the header chip --><div class="actpanel" id="activity-panel"><div class="acthead"><span>Recent activity</span><button class="btn ghost sm" data-act="activity-close" aria-label="Close activity">✕</button></div><div class="actbody" id="activity"></div></div><div class="scrim" id="scrim"></div><div class="modal" id="modal"></div><button class="fab" id="fab" data-act="chat-toggle" aria-label="Open the assistant"><svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8.5 8.5 0 0 1-8.5 8.5H8.5L3.5 23l1.6-5.2A8.5 8.5 0 1 1 21 12z"></path></svg></button><div class="chat" id="chat" role="dialog" aria-label="Flow assistant" aria-live="polite"></div><div class="toast" id="toast" role="status" aria-live="polite"></div><noscript><p style="max-width:640px;margin:24px auto;padding:0 22px;color:#8b95a6;font-size:13px">BlackIT Flow needs JavaScript for the interactive chain (status changes, claiming unowned work, subtasks and the assistant). This static view shows the layout only.</p></noscript><script type="module" src="/_astro/index.astro_astro_type_script_index_0_lang.D1X01wNa.js"></script></body></html>
