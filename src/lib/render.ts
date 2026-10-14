@@ -31,7 +31,7 @@ import {
   statusOf,
   type FlowDomain,
 } from './domain';
-import type { PresencePeer } from './repository/types';
+import type { NotificationRecord, PresencePeer } from './repository/types';
 import type { AuthUser, ChatMessage, ParsedTask, Subtask, Task } from './types';
 
 export interface ChatState {
@@ -924,6 +924,79 @@ export function chatGreeting(domain: FlowDomain): ChatMessage {
 /** Fallback progress percentage for tests and embeds. */
 export { percentDone, GLYPH_BRAND };
 
+/* --------------------------------- bell ---------------------------------- */
+
+const BELL_ICON =
+  '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6"/><path d="M10.5 20a2 2 0 0 0 3 0"/></svg>';
+
+/** What each kind of notification says. Never interpolated raw. */
+const NOTIFICATION_VERB: Record<string, string> = {
+  'task.assigned': 'put you on',
+  'subtask.assigned': 'handed you a step in',
+  'task.status': 'moved',
+};
+
+const STATUS_WORD: Record<string, string> = {
+  BLOCK: 'Blocked',
+  REVIEW: 'In Review',
+  DONE: 'Done',
+};
+
+/**
+ * The header bell and its panel.
+ *
+ * Rendered from inside the live chip's wrapper so the panel anchors to the same
+ * corner and shares the existing popover behaviour (click-outside closes it).
+ * Returns nothing without a backend: notifications are written by database
+ * triggers, so an empty bell in the browser-local build would be a promise the
+ * app cannot keep.
+ */
+export function renderBell(
+  notifications: NotificationRecord[],
+  kind: 'local' | 'supabase',
+): string {
+  if (kind !== 'supabase') return '';
+  const unread = notifications.filter((n) => n.readAt === null).length;
+  const rows = notifications.length
+    ? notifications
+        .map((n) => {
+          const verb = NOTIFICATION_VERB[n.kind] ?? n.kind;
+          const extra =
+            n.kind === 'task.status' ? STATUS_WORD[n.summary] ?? n.summary : n.summary;
+          return (
+            `<button class="notifrow${n.readAt === null ? ' unread' : ''}" data-act="notif-open" data-id="${esc(
+              n.id,
+            )}"${n.taskId ? ` data-task="${esc(n.taskId)}"` : ''}>` +
+            '<i class="notifdot" aria-hidden="true"></i>' +
+            '<span class="notifbody">' +
+            `<span class="notifwho">${esc(n.actorName || 'Someone')}</span> ${esc(verb)} ` +
+            (n.taskKey ? `<span class="key">${esc(n.taskKey)}</span>` : '') +
+            (n.taskId ? '' : ' <span class="notifgone">a task since deleted</span>') +
+            (extra ? `<span class="notifsum">${esc(extra)}</span>` : '') +
+            '</span>' +
+            `<span class="notifwhen">${esc(relAgo(n.createdAt))}</span>` +
+            '</button>'
+          );
+        })
+        .join('')
+    : '<div class="peer muted">Nothing yet. Assignments and hand-offs land here.</div>';
+
+  return (
+    `<button class="bell${unread ? ' on' : ''}" data-act="notif-toggle" aria-label="Notifications${
+      unread ? `, ${unread} unread` : ''
+    }" aria-haspopup="dialog" title="${unread ? `${unread} unread` : 'Notifications'}">` +
+    BELL_ICON +
+    (unread ? `<span class="bellcount">${unread > 9 ? '9+' : unread}</span>` : '') +
+    '</button>' +
+    '<div class="pop notifs" data-pop="notifs">' +
+    '<div class="notifhead"><span>Notifications</span>' +
+    (unread ? '<button class="btn ghost sm" data-act="notif-read-all">Mark all read</button>' : '') +
+    '</div>' +
+    `<div class="notiflist">${rows}</div>` +
+    '</div>'
+  );
+}
+
 /* ------------------------------ sync + people ----------------------------- */
 
 /** Minimal shape the feed needs; keeps render.ts free of a repository import. */
@@ -960,6 +1033,7 @@ export function renderSyncChip(
   peers: PresencePeer[],
   domain: FlowDomain,
   kind: 'local' | 'supabase',
+  notifications: NotificationRecord[] = [],
 ): string {
   const others = peers.filter((p) => p.memberId !== domain.workspace.me);
   const paused = Boolean((status as { realtimePaused?: boolean }).realtimePaused);
@@ -993,6 +1067,7 @@ export function renderSyncChip(
 
   return (
     '<div class="livewrap">' +
+    renderBell(notifications, kind) +
     `<button class="livechip ${tone}" data-act="live-menu" title="${esc(title)}" aria-haspopup="dialog">` +
     '<i class="livedot"></i>' +
     `<span>${esc(label)}</span>` +

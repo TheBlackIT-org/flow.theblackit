@@ -12,7 +12,7 @@ import { isMissingSchemaError } from './supabase';
 import { shouldSeedSample } from './index';
 import { STORAGE_KEY } from '../constants';
 import type { AuthUser, Member, Workspace } from '../types';
-import type { ActivityEntry, ActivityRecord, PresencePeer, WorkspaceRepository } from './types';
+import type { ActivityEntry, ActivityRecord, NotificationRecord, PresencePeer, WorkspaceRepository } from './types';
 
 export interface LoadResult {
   workspace: Workspace;
@@ -203,6 +203,14 @@ export class RepositoryHost {
 
   recentActivity(limit: number): Promise<ActivityRecord[]> {
     return this.repo.recentActivity(limit);
+  }
+
+  recentNotifications(memberId: string, limit: number): Promise<NotificationRecord[]> {
+    return this.repo.recentNotifications(memberId, limit);
+  }
+
+  markNotificationsRead(memberId: string, ids: number[] | 'all'): Promise<void> {
+    return this.repo.markNotificationsRead(memberId, ids);
   }
 
   flush(ws: Workspace, mutationId: string): Promise<void> {

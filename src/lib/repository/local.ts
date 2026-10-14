@@ -13,6 +13,7 @@ import type { AuthUser, Member, Workspace } from '../types';
 import type {
   ActivityEntry,
   ActivityRecord,
+  NotificationRecord,
   SubscribeHandlers,
   WorkspaceRepository,
 } from './types';
@@ -110,6 +111,25 @@ export class LocalRepository implements WorkspaceRepository {
 
   async recentActivity(limit: number): Promise<ActivityRecord[]> {
     return this.activity.slice(0, limit);
+  }
+
+  /**
+   * There is no bell without a backend.
+   *
+   * Notifications are written by database triggers, so a browser-local
+   * workspace has none to show — the app hides the bell rather than presenting
+   * an empty one that can never fill.
+   */
+  async recentNotifications(_memberId: string, _limit: number): Promise<NotificationRecord[]> {
+    void _memberId;
+    void _limit;
+    return [];
+  }
+
+  async markNotificationsRead(_memberId: string, _ids: number[] | 'all'): Promise<void> {
+    void _memberId;
+    void _ids;
+    /* nothing to mark */
   }
 
   /**

@@ -471,6 +471,7 @@ describe('SyncController — demo is local-only', () => {
     const sync = new SyncController(host, {
       onWorkspaceChanged,
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: vi.fn(),
       onPresence: vi.fn(),
     });
@@ -532,9 +533,11 @@ describe('SyncController — demo is local-only', () => {
     live.mode = 'live' as const;
     const host = new RepositoryHost(repo as never);
     const onActivityChanged = vi.fn();
+    const onNotificationsChanged = vi.fn();
     const sync = new SyncController(host, {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged,
+      onNotificationsChanged,
       onStatus: (next) => {
         status = next as never;
       },
@@ -543,6 +546,16 @@ describe('SyncController — demo is local-only', () => {
     sync.setWorkspaceRef(() => live);
     sync.start(null);
     handlers.change?.({ table: 'activity', type: 'INSERT', row: { id: 1, action: 'task.status' } });
+    expect(onActivityChanged).toHaveBeenCalledTimes(1);
+    // A notification is not workspace state either: it is refetched, and the
+    // two feeds must not be confused for one another.
+    expect(onNotificationsChanged).not.toHaveBeenCalled();
+    handlers.change?.({
+      table: 'notifications',
+      type: 'INSERT',
+      row: { id: 2, kind: 'task.assigned', recipient_id: 'm1' },
+    });
+    expect(onNotificationsChanged).toHaveBeenCalledTimes(1);
     expect(onActivityChanged).toHaveBeenCalledTimes(1);
   });
 
@@ -611,6 +624,7 @@ describe('SyncController — resilience', () => {
     const sync = new SyncController(host, {
       onWorkspaceChanged,
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (st) => {
         statuses.push({ state: st.state, pending: st.pending, retryInSeconds: st.retryInSeconds });
       },
@@ -751,6 +765,7 @@ describe('SyncController — setup required', () => {
     const sync = new SyncController(new RepositoryHost(repo as never), {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (s) => statuses.push({ setupRequired: s.setupRequired, state: s.state, error: s.error }),
       onPresence: vi.fn(),
     });
@@ -817,6 +832,7 @@ describe('SyncController — connection timeout', () => {
     const sync = new SyncController(new RepositoryHost(repo as never), {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (st) => statuses.push({ state: st.state, error: st.error }),
       onPresence: vi.fn(),
     });
@@ -956,6 +972,7 @@ describe('setup notice survives later status updates', () => {
     const sync = new SyncController(new RepositoryHost(repo as never), {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (s) => statuses.push({ setupRequired: s.setupRequired, state: s.state, error: s.error }),
       onPresence: vi.fn(),
     });
@@ -1013,6 +1030,7 @@ describe('SyncController — pending count is honest', () => {
     const sync = new SyncController(new RepositoryHost(repo as never), {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (st) => statuses.push(st.pending),
       onPresence: vi.fn(),
     });
@@ -1053,6 +1071,7 @@ describe('SyncController — pending count is honest', () => {
     const sync = new SyncController(new RepositoryHost(repo as never), {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (st) => statuses.push(st.pending),
       onPresence: vi.fn(),
     });
@@ -1103,6 +1122,7 @@ describe('resync never discards unsaved work', () => {
         if (replacement) adopted.push(...replacement.tasks.slice(0, 1));
       },
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (next) => {
         status = next as never;
       },

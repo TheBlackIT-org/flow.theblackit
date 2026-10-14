@@ -20,7 +20,7 @@ npm run dev        # http://localhost:4321
 | `npm run build` | Static build into `dist/` |
 | `npm run preview` | Serve the built `dist/` |
 | `npm run check` | `astro check` + `tsc` over the tests |
-| `npm test` | Vitest (328 tests) |
+| `npm test` | Vitest (401 tests) |
 | `npm run verify` | check + test + build |
 | `npm run watch:schema` | waits for the shared schema to appear, then runs `check:supabase` automatically |
 | `npm run check:two-clients` | live proof of instant push: one client writes, a second receives it over Realtime |
@@ -139,6 +139,7 @@ whole upsert when a column is unknown. Additive first, then deploy.
 | 1 | Apply `0003_member_identity.sql` | Additive; old client unaffected |
 | 1b | Apply `0005_task_assignees.sql` | Additive; old client unaffected |
 | 1c | Apply `0006_subtask_assignee.sql` | Additive; old client unaffected |
+| 1d | Apply `0007_notifications.sql` | Additive; triggers fire for the old client too |
 | 2 | Set `PUBLIC_REQUIRE_LOGIN=true` and deploy | The board now needs a session |
 | 3 | Everyone signs in and is bound (existing team: the name picker; new team: the wizard, then email invites) | Confirm nobody is locked out |
 | 4 | Apply `0004_tighten_rls.sql` | Replaces the permissive `anon` policies |
@@ -207,6 +208,34 @@ counter to the number of tasks it holds.
 | Two people, same second | Each write carries its own mutation id; the origin drops its echo, everyone else applies it |
 | Same field, same second | Last write wins; different tasks never conflict at all |
 
+## Notifications
+
+An in-app bell, and only that: no email, no browser popups, no push service, no
+service worker. Rows land in `notifications` and reach one person over Realtime.
+
+**They are written by database triggers, not by the client.** The client could
+write a row whenever it assigns somebody, and must not:
+
+- every open tab would write its own copy, so one assignment would arrive as
+  many times as there are tabs open;
+- an assignment made from a tab that closes a second later would notify nobody,
+  which is exactly when a notification matters most;
+- the actor would be whatever the client claimed, which is not evidence.
+
+A trigger runs once, in the same transaction as the change it describes, and
+reads the actor from the session (`auth.uid()` → their member row). It never
+notifies somebody about their own click, because a bell that rings for your own
+action is a bell people switch off.
+
+What rings: being put on a task, being handed a subtask, and a task you are on
+going **Blocked**, **In Review** or **Done**. Ordinary status changes are
+deliberately silent — the board already shows them, and a bell that reports
+everything reports nothing.
+
+After the `0004` cutover, the bell is the one per-*person* table: you can select
+and mark read your own rows and nothing else, and there is no insert policy at
+all, so a client cannot manufacture a notification even for itself.
+
 ## What it does
 
 - **One chain per project.** Tasks are a vertical list; order is cosmetic.
@@ -229,6 +258,12 @@ counter to the number of tasks it holds.
   face, the picker has *Assign to me* in its footer, and a step without an owner
   is the normal state rather than a gap. A task's people and a step's owner are
   separate: sharing happens at the task, a step is one person's action.
+- **A bell that tells you when work lands on you.** Being put on a task, handed
+  a step, or having a task you are on go Blocked / In Review / Done lands in the
+  header bell, live over Realtime, with an unread count. Clicking an entry jumps
+  to the task and marks it read; *Mark all read* clears the rest. Nothing is
+  emailed and no push service is involved, and where it comes from matters — see
+  *Notifications* below.
 - **Advisory dependencies.** `dependsOn` renders as "Waiting on …· optional,
   not enforced" — it informs, it never blocks.
 - **Flow assistant.** Answers what is blocked, what is due, who is busiest and
@@ -286,10 +321,12 @@ supabase/migrations/
   0004_tighten_rls.sql       the cutover: authenticated members only (RUN LAST)
   0005_task_assignees.sql    the join table + backfill + the stale-tab bridge
   0006_subtask_assignee.sql  a step can be somebody's (one person, not many)
+  0007_notifications.sql     the bell: table + the triggers that fill it
 test/
   domain.test.ts           rules: claim, cycle, ordering, assistant, storage
   app.test.ts              real DOM (happy-dom): clicks, modals, wizard, chat
   login.test.ts            the sign-in gate, account binding, invites, sign-out
+  notifications.test.ts    the bell: badge, per-recipient scoping, mark-read
   auth.test.ts             the auth port: calls made, errors translated
   account-link.test.ts     invite claiming: matching, ambiguity, migrations
   reorder.test.ts          drop-target maths, including no-op cases

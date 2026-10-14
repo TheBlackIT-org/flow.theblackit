@@ -518,7 +518,27 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .mi.danger { color: var(--red); }
 .sep { height: 1px; background: var(--stroke); margin: 5px 4px; }
 .pop.ws { top: 40px; right: 0; left: auto; width: 244px; }
-.livewrap { position: relative; display: flex; }
+.livewrap { position: relative; display: flex; align-items: center; gap: 8px; }
+
+/* ---------- notifications ---------- */
+.bell { position: relative; width: 30px; height: 28px; flex: none; border: 1px solid var(--stroke); border-radius: 10px; background: rgba(255, 255, 255, 0.04); color: var(--muted); display: grid; place-items: center; transition: color 0.18s ease, border-color 0.18s ease; }
+.bell:hover { color: var(--ink); background: rgba(255, 255, 255, 0.07); }
+/* Only rings when something is actually waiting. */
+.bell.on { color: var(--teal); border-color: rgba(46, 230, 197, 0.4); }
+.bellcount { position: absolute; top: -5px; right: -5px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 20px; background: var(--teal); color: #04231e; font-size: 9.5px; font-weight: 700; display: grid; place-items: center; box-shadow: 0 0 0 2px var(--bg); }
+.notifs { width: 330px; max-width: min(330px, calc(100vw - 40px)); padding: 6px; }
+.notifhead { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 7px 9px 9px; font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-2); }
+.notiflist { max-height: 320px; overflow: auto; }
+.notifrow { position: relative; display: flex; align-items: flex-start; gap: 9px; width: 100%; text-align: left; padding: 9px 10px; border-radius: 10px; color: var(--muted); font-size: 12px; line-height: 1.45; transition: background 0.15s ease; }
+.notifrow:hover { background: rgba(255, 255, 255, 0.055); color: var(--ink); }
+.notifdot { flex: none; width: 6px; height: 6px; margin-top: 5px; border-radius: 50%; background: transparent; }
+.notifrow.unread { color: var(--ink); }
+.notifrow.unread .notifdot { background: var(--teal); box-shadow: 0 0 8px rgba(46, 230, 197, 0.65); }
+.notifbody { flex: 1; min-width: 0; }
+.notifwho { font-weight: 600; }
+.notifsum { display: block; color: var(--muted-2); font-size: 11px; margin-top: 2px; }
+.notifgone { color: var(--muted-2); font-style: italic; }
+.notifwhen { flex: none; font-size: 10.5px; color: var(--muted-2); padding-top: 1px; }
 
 /* ---------- composer + footer ---------- */
 .addend { margin: 6px 0 0 138px; }

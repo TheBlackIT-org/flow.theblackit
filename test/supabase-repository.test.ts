@@ -389,7 +389,15 @@ describe('subscribe', () => {
     const tables = fake.channels[0]!.handlers.map((h) => h.table).sort();
     // Assignment has its own table, so a change to who is on a task arrives as
     // a `task_assignees` event rather than riding along with the task row.
-    expect(tables).toEqual(['activity', 'members', 'projects', 'subtasks', 'task_assignees', 'tasks']);
+    expect(tables).toEqual([
+      'activity',
+      'members',
+      'notifications',
+      'projects',
+      'subtasks',
+      'task_assignees',
+      'tasks',
+    ]);
   });
 
   it('forwards a row event to the app', async () => {
@@ -952,5 +960,86 @@ describe('assignment is a join table', () => {
     expect(writesTo(fake, 'task_assignees')).toEqual([]);
     const deletes = fake.calls.filter((c) => c.table === 'task_assignees' && c.method === 'delete');
     expect(deletes).toEqual([]);
+  });
+});
+
+/**
+ * The bell.
+ *
+ * Notifications are per recipient and written by triggers, so the client's only
+ * jobs are to fetch *one* member's rows and to clear the unread mark. Getting
+ * the first wrong would show somebody else's work; getting the second wrong
+ * would leave a badge that never goes away.
+ */
+describe('notifications', () => {
+  const ME = uuidFor('n-me');
+  const OTHER = uuidFor('n-other');
+  const T = uuidFor('n-task');
+
+  function bell() {
+    const fake = fakeSupabase({
+      workspaces: [{ id: WS }],
+      members: [
+        { id: ME, workspace_id: WS, name: 'Arjun', role: 'owner', title: '', user_id: 'auth-1' },
+        { id: OTHER, workspace_id: WS, name: 'Sneha', role: 'member', title: '', user_id: 'auth-2' },
+      ],
+      notifications: [
+        { id: 1, workspace_id: WS, recipient_id: ME, actor_name: 'Sneha', kind: 'task.assigned', task_id: T, task_key: 'NE-1', summary: '', created_at: new Date(NOW - 1000).toISOString(), read_at: null },
+        { id: 2, workspace_id: WS, recipient_id: ME, actor_name: 'Rahul', kind: 'task.status', task_id: T, task_key: 'NE-1', summary: 'BLOCK', created_at: new Date(NOW).toISOString(), read_at: new Date(NOW).toISOString() },
+        { id: 3, workspace_id: WS, recipient_id: OTHER, actor_name: 'Somebody Else', kind: 'task.assigned', task_id: T, task_key: 'NE-1', summary: '', created_at: new Date(NOW).toISOString(), read_at: null },
+      ],
+    });
+    return { fake, repository: repo(fake) };
+  }
+
+  it('returns one member’s rows, newest first', async () => {
+    const { repository } = bell();
+    const rows = await repository.recentNotifications(ME, 20);
+    expect(rows.map((n) => n.id)).toEqual([2, 1]);
+    expect(rows[0]).toMatchObject({ kind: 'task.status', actorName: 'Rahul', summary: 'BLOCK' });
+    expect(rows[1]!.readAt).toBeNull();
+  });
+
+  it('never returns another member’s notifications', async () => {
+    const { repository } = bell();
+    const rows = await repository.recentNotifications(ME, 20);
+    expect(rows.some((n) => n.actorName === 'Somebody Else')).toBe(false);
+    // And the filter really is on recipient_id, not on something incidental.
+    expect((await repository.recentNotifications(OTHER, 20)).map((n) => n.id)).toEqual([3]);
+  });
+
+  it('returns nothing without a member, rather than everybody’s rows', async () => {
+    const { repository } = bell();
+    expect(await repository.recentNotifications('', 20)).toEqual([]);
+  });
+
+  it('marks one entry read', async () => {
+    const { fake, repository } = bell();
+    await repository.markNotificationsRead(ME, [1]);
+    const stored = fake.tables.notifications?.find((n) => (n as { id: number }).id === 1);
+    expect((stored as { read_at: unknown }).read_at).not.toBeNull();
+    // Only that one: the other member's unread row is untouched.
+    expect(fake.failures.size).toBe(0);
+  });
+
+  it('marks everything unread as read', async () => {
+    const { fake, repository } = bell();
+    await repository.markNotificationsRead(ME, 'all');
+
+    const mine = (fake.tables.notifications ?? []).filter(
+      (n) => (n as { recipient_id: string }).recipient_id === ME,
+    );
+    expect(mine.every((n) => (n as { read_at: unknown }).read_at !== null)).toBe(true);
+    // Somebody else's unread row is not swept up by "all".
+    const theirs = (fake.tables.notifications ?? []).find(
+      (n) => (n as { recipient_id: string }).recipient_id === OTHER,
+    );
+    expect((theirs as { read_at: unknown }).read_at).toBeNull();
+  });
+
+  it('does nothing for an empty id list', async () => {
+    const { fake, repository } = bell();
+    await repository.markNotificationsRead(ME, []);
+    expect(fake.calls.some((c) => c.table === 'notifications' && c.method === 'update')).toBe(false);
   });
 });

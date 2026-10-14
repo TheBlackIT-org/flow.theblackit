@@ -73,6 +73,8 @@ export interface SyncCallbacks {
   onWorkspaceChanged(replacement?: Workspace): void;
   /** An `activity` row landed; the app refetches the feed. */
   onActivityChanged(): void;
+  /** A `notifications` row landed; the app refetches the bell. */
+  onNotificationsChanged(): void;
   onStatus(status: SyncStatus): void;
   onPresence(peers: PresencePeer[]): void;
 }
@@ -374,11 +376,16 @@ export class SyncController {
     // A local playground is not a participant in the shared workspace.
     if (ws.mode === 'demo') return;
 
-    // The audit feed is not workspace state: refetch it rather than patch it.
-    if (change.table === 'activity') {
+    // Neither of these is workspace state: they are fetched whole rather than
+    // patched, so a change is a signal to refetch rather than a diff to apply.
+    // Patching a bell incrementally would also have to reconstruct "which rows
+    // are mine and unread" from a single row event, which is exactly the kind
+    // of guess that gets a badge wrong.
+    if (change.table === 'activity' || change.table === 'notifications') {
       const tag = String(change.row?.mutation_id ?? '');
       if (tag && this.ownMutationIds.has(tag)) return;
-      this.callbacks.onActivityChanged();
+      if (change.table === 'activity') this.callbacks.onActivityChanged();
+      else this.callbacks.onNotificationsChanged();
       return;
     }
 

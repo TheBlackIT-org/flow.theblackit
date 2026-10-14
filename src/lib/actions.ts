@@ -26,6 +26,7 @@ import {
   type AuthScreenState,
   type WizardState,
 } from './render';
+import type { NotificationRecord } from './repository/types';
 import type { AuthUser, Member, ParsedTask, PriorityId } from './types';
 
 export interface ModalState {
@@ -96,6 +97,12 @@ export interface FlowActionsContext {
    * by name. Returns null when that is no longer allowed or no longer possible.
    */
   claimMember(memberId: string): Promise<Member | null>;
+  /** One entry from this member's bell, or null when it is gone. */
+  notification(id: number): NotificationRecord | null;
+  /** Reveal the task a notification is about, and mark it read. */
+  openNotification(id: number): Promise<void>;
+  /** Clear the unread mark on some entries, or on all of them. */
+  markNotificationsRead(ids: number[] | 'all'): Promise<void>;
   /** End the session, forget the cached workspace, and start over. */
   signOut(): Promise<void>;
 }
@@ -565,6 +572,25 @@ export class FlowActions {
       case 'auth-signout':
         await this.ctx.signOut();
         break;
+
+      /* --------------------------- notifications --------------------------- */
+
+      case 'notif-toggle':
+        // Same popover mechanics as the live chip, anchored in the same corner.
+        element.parentElement?.querySelector('[data-pop="notifs"]')?.classList.toggle('on');
+        break;
+
+      case 'notif-read-all':
+        await this.ctx.markNotificationsRead('all');
+        break;
+
+      case 'notif-open': {
+        const id = Number(element.dataset.id);
+        if (!Number.isFinite(id)) break;
+        element.closest('.pop')?.classList.remove('on');
+        await this.ctx.openNotification(id);
+        break;
+      }
 
       case 'close-modal':
         this.closeModal();

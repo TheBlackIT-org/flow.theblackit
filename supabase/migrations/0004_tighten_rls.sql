@@ -91,6 +91,22 @@ as $$
   select lower(nullif(auth.jwt() ->> 'email', ''));
 $$;
 
+/**
+ * The member row belonging to the signed-in account.
+ *
+ * Used by the notification policies, which are per *person* rather than per
+ * workspace — the only place in this schema where that is true.
+ */
+create or replace function my_member_id()
+returns uuid
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select m.id from members m where m.user_id = auth.uid() limit 1;
+$$;
+
 -- ------------------------------------------------------------- anon is gone
 --
 -- Dropping the policies is not enough on its own — the role still holds table
@@ -108,7 +124,7 @@ begin
   for t in
     select unnest(array[
       'workspaces', 'members', 'projects', 'tasks', 'subtasks', 'activity',
-      'task_assignees'
+      'task_assignees', 'notifications'
     ])
   loop
     if to_regclass('public.' || t) is null then
@@ -304,6 +320,30 @@ begin
   execute 'drop policy if exists task_assignees_delete on task_assignees';
   execute 'create policy task_assignees_delete on task_assignees
              for delete to authenticated using (is_task_member(task_id))';
+end;
+$$;
+
+-- ------------------------------------------------- notification policies
+--
+-- The one per-person table: you read your own bell and mark your own rows
+-- read, and you cannot see anybody else's. There is deliberately no insert
+-- policy — notifications are written by SECURITY DEFINER triggers, which
+-- bypass RLS, so a client cannot manufacture one.
+
+do $$
+begin
+  if to_regclass('public.notifications') is null then
+    return;
+  end if;
+
+  execute 'drop policy if exists notifications_select on notifications';
+  execute 'create policy notifications_select on notifications
+             for select to authenticated using (recipient_id = my_member_id())';
+
+  execute 'drop policy if exists notifications_update on notifications';
+  execute 'create policy notifications_update on notifications
+             for update to authenticated using (recipient_id = my_member_id())
+             with check (recipient_id = my_member_id())';
 end;
 $$;
 

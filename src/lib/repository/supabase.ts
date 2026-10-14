@@ -36,16 +36,27 @@ import {
 import type {
   ActivityEntry,
   ActivityRecord,
+  NotificationRecord,
   PresencePeer,
   SubscribeHandlers,
   WorkspaceRepository,
 } from './types';
 
 const ACTIVITY_LIMIT = 40;
+/** How much of a bell is worth fetching: more than anybody scrolls. */
+const NOTIFICATION_LIMIT = 30;
 /** Subset of a `Workspace` that is stored server-side. */
 const TABLES = ['members', 'projects', 'tasks', 'subtasks', 'task_assignees', 'activity'] as const;
 /** Tables the realtime channel listens to. */
-const SYNCED_TABLES = ['tasks', 'subtasks', 'projects', 'members', 'task_assignees', 'activity'] as const;
+const SYNCED_TABLES = [
+  'tasks',
+  'subtasks',
+  'projects',
+  'members',
+  'task_assignees',
+  'activity',
+  'notifications',
+] as const;
 
 /* --------------------------------- helpers -------------------------------- */
 
@@ -743,6 +754,54 @@ export class SupabaseRepository implements WorkspaceRepository {
     }));
     this.nextActivityId = (this.activity[0]?.id ?? 0) + 1;
     return this.activity;
+  }
+
+  /* ---------------------------- notifications ------------------------ */
+
+  /**
+   * One member's bell, newest first.
+   *
+   * The `recipient_id` filter is not a convenience — it is what the policy
+   * checks too, so a wrong id here returns nothing rather than somebody else's
+   * notifications.
+   */
+  async recentNotifications(memberId: string, limit: number): Promise<NotificationRecord[]> {
+    if (!memberId) return [];
+    const { data, error } = await this.client
+      .from('notifications')
+      .select('*')
+      .eq('recipient_id', memberId)
+      .order('created_at', { ascending: false })
+      .limit(Math.min(limit, NOTIFICATION_LIMIT));
+    if (error || !data) return [];
+    return (data as Row[]).map((row) => ({
+      id: Number(row.id ?? 0),
+      kind: str(row.kind),
+      actorId: strOrNull(row.actor_id),
+      actorName: str(row.actor_name),
+      taskId: strOrNull(row.task_id),
+      taskKey: str(row.task_key),
+      summary: str(row.summary),
+      createdAt: ms(row.created_at) ?? Date.now(),
+      readAt: ms(row.read_at),
+    }));
+  }
+
+  async markNotificationsRead(memberId: string, ids: number[] | 'all'): Promise<void> {
+    if (!memberId) return;
+    if (ids !== 'all' && !ids.length) return;
+    const query = this.client
+      .from('notifications')
+      .update({ read_at: new Date().toISOString() })
+      .eq('recipient_id', memberId);
+    // Reading an already-read row is not an error, so the unread filter does
+    // the work rather than the client tracking which ids are outstanding.
+    const scoped = ids === 'all' ? query.is('read_at', null) : query.in('id', ids).is('read_at', null);
+    try {
+      await scoped;
+    } catch {
+      // Marking read must never break the bell it is describing.
+    }
   }
 
   /**

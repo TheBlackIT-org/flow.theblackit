@@ -18,7 +18,14 @@ import type { AuthUser, Member, Workspace } from '../types';
 
 /** A single row change delivered by the backend. */
 export interface RowChange {
-  table: 'tasks' | 'subtasks' | 'projects' | 'members' | 'activity' | 'task_assignees';
+  table:
+    | 'tasks'
+    | 'subtasks'
+    | 'projects'
+    | 'members'
+    | 'activity'
+    | 'task_assignees'
+    | 'notifications';
   type: 'INSERT' | 'UPDATE' | 'DELETE';
   /** Row payload (for DELETE, the primary key fields). */
   row: Record<string, unknown>;
@@ -46,6 +53,28 @@ export interface PresencePeer {
   memberId: string;
   memberName: string;
   onlineAt: number;
+}
+
+/** Why somebody's bell is ringing. */
+export type NotificationKind = 'task.assigned' | 'subtask.assigned' | 'task.status';
+
+/**
+ * One entry in a member's bell.
+ *
+ * Per recipient, not per workspace — which is why it is fetched alongside the
+ * activity feed rather than living in `Workspace`.
+ */
+export interface NotificationRecord {
+  id: number;
+  kind: NotificationKind | string;
+  actorId: string | null;
+  actorName: string;
+  taskId: string | null;
+  taskKey: string;
+  summary: string;
+  createdAt: number;
+  /** Null while unread. */
+  readAt: number | null;
 }
 
 export interface SubscribeHandlers {
@@ -126,4 +155,15 @@ export interface WorkspaceRepository {
 
   /** The most recent activity entries, newest first. */
   recentActivity(limit: number): Promise<ActivityRecord[]>;
+
+  /**
+   * The newest notifications for one member, newest first.
+   *
+   * Scoped by member rather than by workspace: a bell is one person's, and the
+   * database refuses to hand anybody else's rows over.
+   */
+  recentNotifications(memberId: string, limit: number): Promise<NotificationRecord[]>;
+
+  /** Clear the unread mark on some entries, or on all of them for a member. */
+  markNotificationsRead(memberId: string, ids: number[] | 'all'): Promise<void>;
 }

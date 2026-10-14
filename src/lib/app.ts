@@ -34,7 +34,7 @@ import { dropTargetAt, markerTop, type RowRect } from './reorder';
 import { RepositoryHost } from './repository/host';
 import { createBackend } from './repository';
 import { SyncController, type SyncStatus } from './sync';
-import type { PresencePeer } from './repository/types';
+import type { NotificationRecord, PresencePeer } from './repository/types';
 import type { AuthUser, Member, ParsedTask, Workspace } from './types';
 
 /** Copy shown on the document title and the assistant header. */
@@ -69,6 +69,8 @@ export class BlackitFlowApp {
   private renderedMenuAccount: string | null | undefined = undefined;
   private unsubscribeAuth: (() => void) | null = null;
   private presence: PresencePeer[] = [];
+  /** One member's bell. Per recipient, so it is not part of the workspace. */
+  private notifications: NotificationRecord[] = [];
   private syncStatus: SyncStatus = {
     state: 'offline',
     pending: 0,
@@ -116,6 +118,7 @@ export class BlackitFlowApp {
     this.sync = new SyncController(this.host, {
       onWorkspaceChanged: (replacement) => this.onWorkspaceChanged(replacement),
       onActivityChanged: () => void this.loadActivity(),
+      onNotificationsChanged: () => void this.loadNotifications(),
       onStatus: (status) => this.onSyncStatus(status),
       onPresence: (peers) => this.onPresence(peers),
     });
@@ -260,6 +263,7 @@ export class BlackitFlowApp {
     this.sync.stop();
     this.sync.start(this.domain.me);
     void this.loadActivity();
+    void this.loadNotifications();
   }
 
   /** Re-run the post-sign-in path. Used by "Check again" and a verified code. */
@@ -346,7 +350,6 @@ export class BlackitFlowApp {
     // Someone else acted; their entry has landed in the audit trail.
     void this.loadActivity();
   }
-
   private onSyncStatus(status: SyncStatus): void {
     this.syncStatus = status;
     this.renderSyncStatus();
@@ -367,7 +370,15 @@ export class BlackitFlowApp {
   /** Writes the live chip in the header: connection, pending writes, people. */
   private renderSyncStatus(): void {
     const el = document.querySelector(HOOKS.live);
-    if (el) el.innerHTML = renderSyncChip(this.syncStatus, this.presence, this.domain, this.host.kind);
+    if (el) {
+      el.innerHTML = renderSyncChip(
+        this.syncStatus,
+        this.presence,
+        this.domain,
+        this.host.kind,
+        this.notifications,
+      );
+    }
     // A missing schema is fixed by running one SQL file, so say so plainly
     // instead of leaving it to the console.
     const banner = document.querySelector(HOOKS.setupBanner);
@@ -387,6 +398,57 @@ export class BlackitFlowApp {
     if (this.host.kind !== 'supabase') return;
     const entries = await this.host.recentActivity(20);
     this.renderActivity(entries);
+  }
+
+  /**
+   * Fetch this member's bell.
+   *
+   * `domain.me` rather than `workspace.me`: with the sign-in gate off, the
+   * acting member is the *Acting as* choice and falls back to the first member,
+   * while `workspace.me` can still be null on a fresh browser. Reading the
+   * resolved member is what makes the bell work in both deployments.
+   */
+  private async loadNotifications(): Promise<void> {
+    if (this.host.kind !== 'supabase') return;
+    const me = this.domain.me?.id ?? null;
+    if (!me) {
+      this.notifications = [];
+      this.renderSyncStatus();
+      return;
+    }
+    this.notifications = await this.host.recentNotifications(me, 20);
+    this.renderSyncStatus();
+  }
+
+  /** Clear the unread mark and reload, so the badge matches the database. */
+  private async markNotificationsRead(ids: number[] | 'all'): Promise<void> {
+    if (this.host.kind !== 'supabase') return;
+    const me = this.domain.me?.id ?? null;
+    if (!me) return;
+    await this.host.markNotificationsRead(me, ids);
+    await this.loadNotifications();
+  }
+
+  /**
+   * Open a notification: reveal its task and mark it read.
+   *
+   * The task may be in another project, so the board switches to it first —
+   * otherwise clicking a notification would appear to do nothing.
+   */
+  private async openNotification(id: number): Promise<void> {
+    const entry = this.notifications.find((n) => n.id === id);
+    if (!entry) return;
+    const task = entry.taskId ? this.domain.findTask(entry.taskId) : null;
+    if (task) {
+      this.domain.workspace.projectId = task.projectId;
+      this.domain.workspace.fMember = 'all';
+      this.domain.workspace.fStatus = 'all';
+      // The entrance animation is the only signal that the chain moved.
+      this.domain.workspace.enter = task.id;
+      this.domain.save();
+    }
+    await this.markNotificationsRead([id]);
+    this.actions.refresh();
   }
 
   private renderActivity(entries: Awaited<ReturnType<RepositoryHost['recentActivity']>>): void {
@@ -481,6 +543,9 @@ export class BlackitFlowApp {
         if (!self.account) return null;
         return await self.host.claimMember(memberId, self.account);
       },
+      notification: (id) => self.notifications.find((n) => n.id === id) ?? null,
+      openNotification: (id) => self.openNotification(id),
+      markNotificationsRead: (ids) => self.markNotificationsRead(ids),
       signOut: () => self.signOut(),
     };
   }
@@ -723,9 +788,22 @@ export class BlackitFlowApp {
 
     // Any click outside an open popover closes the ones that aren't the target.
     if (!target.closest('.pop')) {
-      const keep = act === 'menu' ? button?.dataset.id : undefined;
+      // Keep the popover the clicked control *owns*, and let the action toggle
+      // it. Closing everything first meant a second click on the same control
+      // closed and immediately re-opened it, so no menu could ever be dismissed
+      // from its own button — and with two popovers in one slot (the bell and
+      // the live chip) it also left the other one open.
+      //
+      // The popover is always the button's next sibling; see renderMenuButton,
+      // popMenu and renderBell.
+      let owned: string | null = null;
+      let sibling = button?.nextElementSibling as HTMLElement | null;
+      while (sibling && !owned) {
+        if (sibling.dataset?.pop) owned = sibling.dataset.pop;
+        sibling = sibling.nextElementSibling as HTMLElement | null;
+      }
       document.querySelectorAll<HTMLElement>('.pop.on').forEach((p) => {
-        if (!(act === 'menu' && p.dataset.pop === keep)) p.classList.remove('on');
+        if (p.dataset.pop !== owned) p.classList.remove('on');
       });
     }
     if (!button || !act) return;

@@ -172,6 +172,53 @@ describe('mapper rows only use declared columns', () => {
     expect(LATER_SQL.join('\n')).toMatch(/references members\(id\) on delete set null/i);
   });
 
+  it('declares the notification table and the triggers that fill it', () => {
+    expect(ALL_SQL).toContain('create table if not exists notifications');
+    const columns = columnsOf('notifications');
+    for (const column of [
+      'workspace_id',
+      'recipient_id',
+      'actor_id',
+      'actor_name',
+      'kind',
+      'task_id',
+      'task_key',
+      'summary',
+      'created_at',
+      'read_at',
+      'mutation_id',
+    ]) {
+      expect(columns.has(column), `notifications.${column} missing`).toBe(true);
+    }
+
+    // Written by triggers, not by the client: one per assignment, per step
+    // hand-over, and per status change worth interrupting for.
+    for (const trigger of [
+      'task_assignees_notify',
+      'subtasks_notify_assignment',
+      'tasks_notify_status',
+    ]) {
+      expect(ALL_SQL, `${trigger} missing`).toContain(`create trigger ${trigger}`);
+    }
+    expect(ALL_SQL).toMatch(/alter table notifications\s+enable row level security/);
+  });
+
+  it('never notifies the person who made the change', () => {
+    // A bell that rings for your own click is a bell people turn off.
+    const sql = LATER_SQL.join('\n');
+    expect(sql).toMatch(/v_actor = new\.member_id/);
+    expect(sql).toMatch(/v_actor = new\.assignee_id/);
+    expect(sql).toMatch(/a\.member_id <> v_actor/);
+  });
+
+  it('scopes the bell per person, and lets nobody write one by hand', () => {
+    const tighten = LATER_SQL.join('\n');
+    expect(tighten).toMatch(/recipient_id = my_member_id\(\)/);
+    // No insert policy on purpose: the triggers are SECURITY DEFINER, so a
+    // client cannot manufacture a notification even for itself.
+    expect(tighten).not.toMatch(/create policy notifications_insert/);
+  });
+
   it('keeps the legacy assignee column so a stale tab still works', () => {
     // Expand, do not contract: the deployed client still writes assignee_id.
     // Dropping it in 0005 would break every open tab the moment it is applied.

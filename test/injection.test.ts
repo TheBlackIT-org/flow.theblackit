@@ -9,6 +9,7 @@ import {
   accountAvatar,
   projectMenu,
   renderAuthScreen,
+  renderBell,
   renderChain,
   renderChat,
   renderControls,
@@ -157,6 +158,41 @@ describe('hostile account data stays inert', () => {
     t.subs[0]!.assigneeId = d.workspace.members[0]!.id;
     expectInert(renderChain(d), 'card with an assigned step');
     expectInert(subAssignBody(d, t, t.subs[0]!), 'step picker with an owner');
+  });
+
+  it('escapes the notification bell', () => {
+    // Every field here comes from another account: the actor names themselves,
+    // and the summary is a subtask's text or a status code.
+    expectInert(
+      renderBell(
+        [
+          {
+            id: 1,
+            kind: 'task.assigned',
+            actorId: null,
+            actorName: PAYLOAD,
+            taskId: 't1',
+            taskKey: QUOTE_BREAK,
+            summary: SCRIPT,
+            createdAt: Date.now(),
+            readAt: null,
+          },
+          {
+            id: 2,
+            kind: 'subtask.assigned',
+            actorId: null,
+            actorName: SCRIPT,
+            taskId: null,
+            taskKey: '',
+            summary: PAYLOAD,
+            createdAt: Date.now(),
+            readAt: null,
+          },
+        ],
+        'supabase',
+      ),
+      'bell',
+    );
   });
 });
 

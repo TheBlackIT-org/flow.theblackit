@@ -129,6 +129,9 @@ export const ACTIONS = [
   'auth-retry',
   'auth-claim',
   'auth-signout',
+  'notif-toggle',
+  'notif-read-all',
+  'notif-open',
   'close-modal',
   'submit-modal',
 ] as const;
