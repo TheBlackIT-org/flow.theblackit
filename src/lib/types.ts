@@ -93,6 +93,13 @@ export interface Subtask {
   id: string;
   t: string;
   done: boolean;
+  /**
+   * Who owns this step, if anybody.
+   *
+   * One person, unlike a task: a subtask is a single action, so "shared" would
+   * mean nothing. Absent (not null) when nobody has it.
+   */
+  assigneeId?: string | null;
 }
 
 export interface Task {

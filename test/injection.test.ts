@@ -15,6 +15,7 @@ import {
   renderHeadProgress,
   renderSubBar,
   renderWelcome,
+  subAssignBody,
   teamBody,
   editTaskBody,
   previewHtml,
@@ -145,6 +146,17 @@ describe('hostile account data stays inert', () => {
 
   it('escapes invite addresses on the team screen', () => {
     expectInert(teamBody(poisoned()), 'team invites');
+  });
+
+  it('escapes the step picker and the step owner on a card', () => {
+    const d = poisoned();
+    const t = d.workspace.tasks[0]!;
+    // Unassigned first, then with a hostile member on the step: the row draws
+    // their initials and their name in a title attribute.
+    expectInert(subAssignBody(d, t, t.subs[0]!), 'step picker');
+    t.subs[0]!.assigneeId = d.workspace.members[0]!.id;
+    expectInert(renderChain(d), 'card with an assigned step');
+    expectInert(subAssignBody(d, t, t.subs[0]!), 'step picker with an owner');
   });
 });
 

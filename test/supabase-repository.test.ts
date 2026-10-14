@@ -930,6 +930,22 @@ describe('assignment is a join table', () => {
     }
   });
 
+  it('carries a step owner on the subtask row', async () => {
+    const { fake, repository, loaded } = await primed();
+    const task = loaded.tasks.find((t) => t.subs.length)!;
+    const sub = task.subs[0]!;
+    const owner = loaded.members[3]!.id;
+    sub.assigneeId = owner;
+
+    await repository.flush(loaded, 'mut-step');
+
+    const rows = (writesTo(fake, 'subtasks', 'upsert') as Array<Array<Record<string, unknown>>>).flat();
+    const row = rows.find((r) => r.id === sub.id)!;
+    expect(row.assignee_id).toBe(owner);
+    // `assigned_at` is the trigger's job, so the client must not send one.
+    expect(row).not.toHaveProperty('assigned_at');
+  });
+
   it('does not touch the database when assignment is unchanged', async () => {
     const { fake, repository, loaded } = await primed();
     await repository.flush(loaded, 'mut-noop');

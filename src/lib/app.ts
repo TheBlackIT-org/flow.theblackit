@@ -567,15 +567,17 @@ export class BlackitFlowApp {
     document
       .querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('#modal [name]')
       .forEach((el) => {
-        // An unticked checkbox is not part of the answer. Without this the
-        // multi-select assign modal would read every member as selected, since
-        // a checkbox keeps its `value` whether or not it is checked.
+        // An unticked box is not part of the answer — and the same is true of an
+        // unselected radio, which keeps its `value` either way. Without this the
+        // multi-select assign modal would read every member as selected, and the
+        // subtask owner picker would return whichever member happened to be
+        // rendered last rather than the chosen one.
         //
-        // Checked structurally, not with `instanceof`: that constructor is
+        // Checked structurally, not with `instanceof`: those constructors are
         // absent outside a real browser and a ReferenceError here would break
         // every modal in the app.
         const field = el as HTMLInputElement;
-        if (field.type === 'checkbox' && !field.checked) return;
+        if ((field.type === 'checkbox' || field.type === 'radio') && !field.checked) return;
         out[el.name] = el.value;
       });
     return out;

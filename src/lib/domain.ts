@@ -485,6 +485,7 @@ export interface MutationEvent {
     | 'task.assigned'
     | 'task.reordered'
     | 'subtask.added'
+    | 'subtask.assigned'
     | 'project.created'
     | 'member.added'
     | 'member.removed'
@@ -925,7 +926,14 @@ export class FlowDomain {
     return t;
   }
 
-  /** Replace the subtask list from a textarea, preserving done flags by text. */
+  /**
+   * Replace the subtask list from a textarea, preserving done flags by text.
+   *
+   * `assigneeId` is carried over too. Matching rows by their text and dropping
+   * everything else would quietly wipe every step assignment in the task the
+   * moment somebody edited the description — a silent loss, invisible until
+   * someone noticed their name had gone.
+   */
   replaceSubs(id: string, lines: string[]): void {
     const t = this.findTask(id);
     if (!t) return;
@@ -934,9 +942,50 @@ export class FlowDomain {
       const prev = old.find((o) => o.t === line) ?? old[ix];
       // Keep the existing row id when the text still matches, so an edit is an
       // UPDATE rather than a delete + insert.
-      return { id: prev?.id ?? uid('s'), t: line, done: prev ? !!prev.done : false };
+      return {
+        id: prev?.id ?? uid('s'),
+        t: line,
+        done: prev ? !!prev.done : false,
+        assigneeId: prev?.assigneeId ?? null,
+      };
     });
     this.save();
+  }
+
+  /**
+   * Put one person on one subtask, or (`null`) take it off.
+   *
+   * Keyed by subtask id rather than index: the assign modal is a round trip,
+   * and a list that shifted underneath it would otherwise assign the wrong step.
+   */
+  assignSub(taskId: string, subId: string, memberId: string | null): { message: string; task: Task | null } {
+    const t = this.findTask(taskId);
+    const sub = t?.subs.find((s) => s.id === subId);
+    if (!t || !sub) return { message: 'Subtask not found', task: null };
+    if (!memberId) {
+      if (!sub.assigneeId) return { message: 'Nobody has that step', task: t };
+      sub.assigneeId = null;
+      this.save();
+      return { message: `“${sub.t}” is unassigned`, task: t };
+    }
+    const m = this.member(memberId);
+    if (!m) return { message: 'Member not found', task: t };
+    if (sub.assigneeId === memberId) return { message: `${m.name} already has that step`, task: t };
+    sub.assigneeId = memberId;
+    this.save();
+    this.emit({ action: 'subtask.assigned', taskKey: t.key, summary: `${m.name} · ${sub.t}` });
+    return { message: `${m.name} has “${sub.t}”`, task: t };
+  }
+
+  /** One-click "this step is mine" — and the same click takes it back off. */
+  toggleSubAssignee(taskId: string, subId: string): { message: string } {
+    const me = this.workspace.me;
+    if (!me) return { message: 'Nobody is signed in' };
+    const t = this.findTask(taskId);
+    const sub = t?.subs.find((s) => s.id === subId);
+    if (!t || !sub) return { message: 'Subtask not found' };
+    const r = this.assignSub(taskId, subId, sub.assigneeId === me ? null : me);
+    return { message: r.message };
   }
 
   nextKey(projectId: string): string {
@@ -1113,6 +1162,11 @@ export class FlowDomain {
         t.claimedBy = t.assigneeIds[0] ?? null;
         t.claimedAt = t.claimedBy ? t.claimedAt : null;
       }
+      // Steps they owned go back into the unassigned pile rather than pointing
+      // at a member who no longer exists.
+      t.subs.forEach((s) => {
+        if (s.assigneeId === id) s.assigneeId = null;
+      });
     });
     this.workspace.members = this.workspace.members.filter((x) => x.id !== id);
     if (this.workspace.me === id) this.workspace.me = this.workspace.members[0]?.id ?? null;

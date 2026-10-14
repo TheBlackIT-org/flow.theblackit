@@ -138,6 +138,7 @@ whole upsert when a column is unknown. Additive first, then deploy.
 | --- | --- | --- |
 | 1 | Apply `0003_member_identity.sql` | Additive; old client unaffected |
 | 1b | Apply `0005_task_assignees.sql` | Additive; old client unaffected |
+| 1c | Apply `0006_subtask_assignee.sql` | Additive; old client unaffected |
 | 2 | Set `PUBLIC_REQUIRE_LOGIN=true` and deploy | The board now needs a session |
 | 3 | Everyone signs in and is bound (existing team: the name picker; new team: the wizard, then email invites) | Confirm nobody is locked out |
 | 4 | Apply `0004_tighten_rls.sql` | Replaces the permissive `anon` policies |
@@ -223,8 +224,11 @@ counter to the number of tasks it holds.
   whole list, and **Assign me too** puts you on somebody else's task without
   disturbing them. An empty list is the open pool, and anyone can
   **Take this task**.
-- **Subtasks.** Any member can tick, add or delete steps; the chip shows
-  progress.
+- **Subtasks, with owners.** Any member can tick, add or delete steps; the chip
+  shows progress. Any step can be handed to one person — the row shows their
+  face, the picker has *Assign to me* in its footer, and a step without an owner
+  is the normal state rather than a gap. A task's people and a step's owner are
+  separate: sharing happens at the task, a step is one person's action.
 - **Advisory dependencies.** `dependsOn` renders as "Waiting on …· optional,
   not enforced" — it informs, it never blocks.
 - **Flow assistant.** Answers what is blocked, what is due, who is busiest and
@@ -281,6 +285,7 @@ supabase/migrations/
   0003_member_identity.sql   members.email + the two unique indexes (additive)
   0004_tighten_rls.sql       the cutover: authenticated members only (RUN LAST)
   0005_task_assignees.sql    the join table + backfill + the stale-tab bridge
+  0006_subtask_assignee.sql  a step can be somebody's (one person, not many)
 test/
   domain.test.ts           rules: claim, cycle, ordering, assistant, storage
   app.test.ts              real DOM (happy-dom): clicks, modals, wizard, chat

@@ -106,11 +106,15 @@ export function taskAssigneeToRow(a: TaskAssigneeRow): Row {
 }
 
 export function subtaskFromRow(row: Row): Subtask {
-  return {
+  const sub: Subtask = {
     id: str(row.id),
     t: str(row.text),
     done: Boolean(row.done),
   };
+  // Present from `0006_subtask_assignee.sql`; read defensively so a deployment
+  // that has not run it yet still loads.
+  if (row.assignee_id !== undefined) sub.assigneeId = strOrNull(row.assignee_id);
+  return sub;
 }
 
 /* -------------------------------- → row ---------------------------------- */
@@ -181,5 +185,14 @@ export function taskToRow(t: Task, position: number): Row {
 }
 
 export function subtaskToRow(s: Subtask, taskId: string, position: number): Row {
-  return { id: s.id, task_id: taskId, text: s.t, done: s.done, position };
+  return {
+    id: s.id,
+    task_id: taskId,
+    text: s.t,
+    done: s.done,
+    position,
+    // Who owns the step. `assigned_at` is deliberately absent: a trigger stamps
+    // it when this value changes, so the client never has to track it.
+    assignee_id: s.assigneeId ?? null,
+  };
 }

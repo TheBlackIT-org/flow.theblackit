@@ -32,7 +32,7 @@ import {
   type FlowDomain,
 } from './domain';
 import type { PresencePeer } from './repository/types';
-import type { AuthUser, ChatMessage, ParsedTask, Task } from './types';
+import type { AuthUser, ChatMessage, ParsedTask, Subtask, Task } from './types';
 
 export interface ChatState {
   open: boolean;
@@ -352,15 +352,35 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
     `<div class="subs${t.open ? ' on' : ''}">` +
     (t.subs.length
       ? t.subs
-          .map(
-            (s, ix) =>
+          .map((s, ix) => {
+            const owner = domain.member(s.assigneeId ?? null);
+            const mine = Boolean(s.assigneeId) && s.assigneeId === domain.workspace.me;
+            return (
               `<div class="srow${s.done ? ' on' : ''}">` +
               `<button class="sbox${s.done ? ' on' : ''}" data-act="sub" data-id="${esc(t.id)}" data-idx="${esc(ix)}">${
                 s.done ? ICON.check : ''
               }</button>` +
-              `<span>${esc(s.t)}</span>` +
-              `<button class="sdel" data-act="sub-del" data-id="${esc(t.id)}" data-idx="${esc(ix)}" title="Delete this subtask">✕</button></div>`,
-          )
+              `<span class="stext">${esc(s.t)}</span>` +
+              // One control for both states: it shows whose step it is when it
+              // is somebody's, and offers the picker when it is nobody's.
+              `<button class="sassign${owner ? ' on' : ''}${mine ? ' mine' : ''}" data-act="sub-assign" data-id="${esc(
+                t.id,
+              )}" data-sub="${esc(s.id)}" title="${
+                owner ? `Assigned to ${esc(owner.name)} · click to change` : 'Assign this step'
+              }">${
+                owner
+                  ? `<span class="av" style="background:${domain.colorFor(owner.id)}">${esc(
+                      owner.name
+                        .split(' ')
+                        .map((w) => w[0] ?? '')
+                        .slice(0, 2)
+                        .join(''),
+                    )}</span>`
+                  : ICON.person
+              }</button>` +
+              `<button class="sdel" data-act="sub-del" data-id="${esc(t.id)}" data-idx="${esc(ix)}" title="Delete this subtask">✕</button></div>`
+            );
+          })
           .join('')
       : '<div class="subempty">No subtasks yet. Anyone can add one.</div>') +
     `<div class="subadd"><input type="text" data-subinput="${esc(t.id)}" placeholder="Add a subtask and press Enter" />` +
@@ -704,6 +724,55 @@ export function reassignBody(domain: FlowDomain, t: Task): string {
   );
 }
 
+/**
+ * Who owns one subtask step.
+ *
+ * A radio group rather than checkboxes: a subtask is a single action, so
+ * sharing it would mean nothing. "Nobody" is a real option — an unassigned step
+ * is the normal state, not a gap to be filled.
+ */
+export function subAssignBody(domain: FlowDomain, t: Task, sub: Subtask): string {
+  const me = domain.workspace.me;
+  const options = [
+    `<label class="assignrow${!sub.assigneeId ? ' on' : ''}">` +
+      `<input type="radio" name="subOwner" value=""${!sub.assigneeId ? ' checked' : ''} />` +
+      '<span class="assignname"><div>Nobody</div><div>Leave this step unassigned</div></span>' +
+      '</label>',
+    ...domain.workspace.members.map((m) => {
+      const on = sub.assigneeId === m.id;
+      return (
+        `<label class="assignrow${on ? ' on' : ''}">` +
+        `<input type="radio" name="subOwner" value="${esc(m.id)}"${on ? ' checked' : ''} />` +
+        avatar(domain, m.id) +
+        `<span class="assignname"><div>${esc(m.name)}${
+          m.id === me ? ' <span class="you">you</span>' : ''
+        }</div><div>${esc(m.title || m.role)}</div></span>` +
+        '</label>'
+      );
+    }),
+  ].join('');
+  return (
+    `<div class="subhead">${esc(t.key)} · ${esc(sub.t)}</div>` +
+    `<div class="assignlist">${options}</div>`
+  );
+}
+
+/**
+ * The step picker's actions.
+ *
+ * "Assign to me" is here rather than on the row: the row already carries a
+ * tick, the owner control and delete, and a fourth button would be noise. In
+ * the modal it is exactly where somebody looking at "whose step is this?"
+ * expects to find themselves.
+ */
+export function subAssignFooter(t: Task, sub: Subtask): string {
+  return (
+    '<button class="btn ghost" data-act="close-modal">Cancel</button>' +
+    `<button class="btn" data-act="sub-assign-me" data-id="${esc(t.id)}" data-sub="${esc(sub.id)}">Assign to me</button>` +
+    '<button class="btn primary" data-act="submit-modal">Save</button>'
+  );
+}
+
 export function projectBody(domain: FlowDomain): string {
   const products = [...new Set(domain.workspace.projects.map((p) => p.product).filter(Boolean))];
   return (
@@ -984,6 +1053,7 @@ const ACTIVITY_VERB: Record<string, string> = {
   'task.assigned': 'assigned',
   'task.reordered': 'reordered',
   'subtask.added': 'added a step to',
+  'subtask.assigned': 'handed a step to',
   'project.created': 'created',
   'member.added': 'joined',
   'member.removed': 'was removed from',

@@ -318,6 +318,53 @@ describe('subtasks', () => {
     key(input, 'Enter');
     expect(app.domain.findTask('t1')?.subs.at(-1)?.t).toBe('Typed then entered');
   });
+
+  it('hands a step to somebody else from the step picker', async () => {
+    await click($('.row[data-task="t1"] .subtoggle'));
+    const sub = app.domain.findTask('t1')!.subs[0]!;
+    expect(sub.assigneeId ?? null).toBeNull();
+    // An unassigned step shows the muted "assign" affordance, not a face.
+    expect($('.row[data-task="t1"] .sassign.on')).toBeNull();
+
+    await click($('.row[data-task="t1"] .sassign'));
+    expect($('#modal').classList.contains('on')).toBe(true);
+    // "Nobody" is a real option, and it starts selected.
+    expect($('#modal').textContent).toContain('Nobody');
+
+    ($('#modal input[type="radio"][value="m5"]') as El).checked = true;
+    await click($('#modal [data-act="submit-modal"]'));
+
+    expect(app.domain.findTask('t1')!.subs[0]!.assigneeId).toBe('m5');
+    // The row now carries the owner's face rather than the placeholder.
+    expect($('.row[data-task="t1"] .sassign.on')).not.toBeNull();
+    expect($('.row[data-task="t1"] .sassign .av').textContent).toBe('MS');
+  });
+
+  it('claims a step for yourself from the picker footer', async () => {
+    await click($('.row[data-task="t1"] .subtoggle'));
+    app.domain.workspace.me = 'm1';
+
+    await click($('.row[data-task="t1"] .sassign'));
+    await click($('#modal [data-act="sub-assign-me"]'));
+
+    expect(app.domain.findTask('t1')!.subs[0]!.assigneeId).toBe('m1');
+    // The footer action closes the modal: its list is stale the moment it acts.
+    expect($('#modal').classList.contains('on')).toBe(false);
+  });
+
+  it('keeps step owners when the task is edited through the modal', async () => {
+    // The edit modal rebuilds every subtask row from the textarea. Matching on
+    // text alone silently dropped the owners.
+    await click($('.row[data-task="t1"] .subtoggle'));
+    const sub = app.domain.findTask('t1')!.subs[0]!;
+    app.domain.assignSub('t1', sub.id, 'm4');
+
+    await click($('.row[data-task="t1"] .kebab'));
+    await click($('.row[data-task="t1"] [data-act="edit"]'));
+    await click($('#modal [data-act="submit-modal"]'));
+
+    expect(app.domain.findTask('t1')!.subs[0]!.assigneeId).toBe('m4');
+  });
 });
 
 describe('modals', () => {

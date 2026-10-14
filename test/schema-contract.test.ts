@@ -160,6 +160,18 @@ describe('mapper rows only use declared columns', () => {
     expect(LATER_SQL.join('\n')).toMatch(/task_assignees/);
   });
 
+  it('gives a subtask step an owner, stamped by the database', () => {
+    const columns = columnsOf('subtasks');
+    expect(columns.has('assignee_id'), 'subtasks.assignee_id missing').toBe(true);
+    // When it was handed over, filled by the trigger rather than the client —
+    // the client does not track it and must not be able to forge it.
+    expect(columns.has('assigned_at'), 'subtasks.assigned_at missing').toBe(true);
+    expect(ALL_SQL).toMatch(/create trigger subtasks_assignee_stamp/);
+    // A removed member leaves their steps unassigned rather than pointing at
+    // a row that no longer exists.
+    expect(LATER_SQL.join('\n')).toMatch(/references members\(id\) on delete set null/i);
+  });
+
   it('keeps the legacy assignee column so a stale tab still works', () => {
     // Expand, do not contract: the deployed client still writes assignee_id.
     // Dropping it in 0005 would break every open tab the moment it is applied.

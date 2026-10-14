@@ -335,6 +335,81 @@ describe('subtasks', () => {
     expect(subs[2]?.done).toBe(false);
     expect(subs[2]?.id).toBeTruthy();
   });
+
+  it('gives a step an owner, and takes them off again', () => {
+    const d = domain();
+    const sub = d.findTask('t1')!.subs[0]!;
+    expect(sub.assigneeId ?? null).toBeNull();
+
+    const r = d.assignSub('t1', sub.id, 'm4');
+    expect(r.message).toContain('Rahul');
+    expect(d.findTask('t1')!.subs[0]!.assigneeId).toBe('m4');
+
+    // Assigning the same person again is a no-op, not an error.
+    expect(d.assignSub('t1', sub.id, 'm4').message).toContain('already');
+    expect(d.assignSub('t1', sub.id, null).message).toContain('unassigned');
+    expect(d.findTask('t1')!.subs[0]!.assigneeId).toBeNull();
+  });
+
+  it('keys a step assignment by subtask id, not position', () => {
+    // The picker is a round trip. Indexing by position would assign whichever
+    // step happened to land in that slot while the modal was open.
+    const d = domain();
+    const second = d.findTask('t1')!.subs[1]!;
+    d.addSub('t1', 'A step added while the modal was open');
+    d.assignSub('t1', second.id, 'm4');
+    expect(d.findTask('t1')!.subs[1]!.assigneeId).toBe('m4');
+    expect(d.findTask('t1')!.subs[2]!.assigneeId ?? null).toBeNull();
+  });
+
+  it('refuses an unknown step or member', () => {
+    const d = domain();
+    expect(d.assignSub('t1', 'not-a-step', 'm4').message).toContain('not found');
+    expect(d.assignSub('t1', d.findTask('t1')!.subs[0]!.id, 'not-a-member').message).toContain('not found');
+  });
+
+  it('lets anybody claim a step for themselves, and hand it back', () => {
+    const d = domain();
+    const sub = d.findTask('t1')!.subs[0]!;
+    expect(d.toggleSubAssignee('t1', sub.id).message).toContain('Arjun');
+    expect(d.findTask('t1')!.subs[0]!.assigneeId).toBe('m1');
+    // The same click takes it off again rather than reassigning it.
+    expect(d.toggleSubAssignee('t1', sub.id).message).toContain('unassigned');
+    expect(d.findTask('t1')!.subs[0]!.assigneeId).toBeNull();
+  });
+
+  it('keeps step owners when the task description is edited', () => {
+    // Regression risk: replaceSubs rebuilds every row from the textarea. It
+    // matched on text and dropped everything else, which silently wiped every
+    // step assignment in the task.
+    const d = domain();
+    const kept = d.findTask('t1')!.subs[0]!;
+    d.assignSub('t1', kept.id, 'm4');
+    d.replaceSubs('t1', ['Message list renders nearby users', 'Pull to refresh']);
+    const after = d.findTask('t1')!.subs[0]!;
+    expect(after.id).toBe(kept.id);
+    expect(after.assigneeId).toBe('m4');
+  });
+
+  it('drops a removed member’s steps back to unassigned', () => {
+    const d = domain();
+    const sub = d.findTask('t1')!.subs[0]!;
+    d.assignSub('t1', sub.id, 'm4');
+    d.removeMember('m4');
+    expect(d.findTask('t1')!.subs[0]!.assigneeId ?? null).toBeNull();
+  });
+
+  it('records the hand-over in the audit trail', () => {
+    const events: Array<{ action: string; summary: string }> = [];
+    const d = new FlowDomain(seed(FIXED_NOW), {
+      storage: null,
+      onEvent: (e) => events.push({ action: e.action, summary: e.summary }),
+    });
+    const sub = d.findTask('t1')!.subs[0]!;
+    d.assignSub('t1', sub.id, 'm4');
+    expect(events.at(-1)?.action).toBe('subtask.assigned');
+    expect(events.at(-1)?.summary).toContain('Rahul');
+  });
 });
 
 describe('team', () => {

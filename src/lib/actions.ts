@@ -18,6 +18,8 @@ import {
   previewHtml,
   projectBody,
   reassignBody,
+  subAssignBody,
+  subAssignFooter,
   teamBody,
   wizardBody,
   wizardFooter,
@@ -231,6 +233,33 @@ export class FlowActions {
         domain.removeSub(id, Number(element.dataset.idx));
         this.ctx.renderChain();
         this.ctx.toast('Subtask removed');
+        break;
+      }
+
+      case 'sub-assign': {
+        const t = domain.findTask(id);
+        const sub = t?.subs.find((s) => s.id === element.dataset.sub);
+        if (!t || !sub) break;
+        this.showModal(
+          'Who owns this step?',
+          subAssignBody(domain, t, sub),
+          subAssignFooter(t, sub),
+          (d) => {
+            const r = domain.assignSub(t.id, sub.id, d.subOwner || null);
+            this.refresh();
+            this.ctx.toast(r.message);
+            return true;
+          },
+        );
+        break;
+      }
+
+      case 'sub-assign-me': {
+        const r = domain.toggleSubAssignee(id, element.dataset.sub ?? '');
+        // The modal was the context for the click, and its list is now stale.
+        this.closeModal();
+        this.refresh();
+        this.ctx.toast(r.message);
         break;
       }
 

@@ -152,10 +152,27 @@ body.reordering { user-select: none; cursor: grabbing; }
 body.grabbing-grip { cursor: grabbing; }
 
 /* ---------- subtask editing ---------- */
+/* The step row itself. This rule was missing: the children below all carried
+   `flex:` properties, but with no flex container to honour them every step
+   rendered as three stacked lines — tick, text, then the delete button — and
+   the assigned-step face landed under the text instead of beside it. */
+.srow { display: flex; align-items: center; gap: 8px; padding: 4px 0; }
 .srow .sdel { opacity: 0; width: 20px; height: 20px; border-radius: 6px; color: var(--muted-2); display: grid; place-items: center; font-size: 13px; flex: none; transition: opacity 0.15s ease; }
 .srow:hover .sdel { opacity: 1; }
 .srow .sdel:hover { color: var(--red); background: rgba(255, 97, 97, 0.12); }
-.srow span { flex: 1; }
+/* `.stext`, not a bare `span`: the latter also caught the assignee avatar
+   inside the button below and stretched it across the row. */
+.srow .stext { flex: 1; min-width: 0; }
+.srow.on .stext { color: var(--muted-2); }
+/* Who owns this step. Hidden until the row is hovered, except once somebody
+   has it — an assigned step should be visible without hunting for it. */
+.sassign { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: var(--muted-2); border: 1px dashed var(--stroke); opacity: 0; transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+.srow:hover .sassign, .sassign.on { opacity: 1; }
+.sassign.on { border-style: solid; border-color: transparent; }
+.sassign:hover { border-color: rgba(46, 230, 197, 0.55); color: var(--teal); }
+.sassign svg { width: 12px; height: 12px; }
+.sassign .av { width: 22px; height: 22px; font-size: 9.5px; }
+.sassign.mine { box-shadow: 0 0 0 2px rgba(46, 230, 197, 0.5); }
 .subadd { display: flex; gap: 7px; align-items: center; margin-top: 9px; }
 .subadd input { flex: 1; padding: 6px 9px; font-size: 12.5px; border-radius: 9px; }
 .subadd button { border: 1px solid var(--stroke); border-radius: 9px; padding: 5px 11px; font-size: 12px; color: var(--muted); }
@@ -244,6 +261,8 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .assignrow .av { flex: none; }
 .assignname { flex: 1; min-width: 0; font-size: 12.5px; }
 .assignname div:last-child { font-size: 11px; color: var(--muted-2); }
+/* The step being assigned, quoted above the list so the modal says what it is about. */
+.subhead { font-size: 12px; color: var(--muted); border-left: 2px solid var(--stroke); padding-left: 10px; margin-bottom: 14px; line-height: 1.5; }
 .wzdots { display: flex; gap: 6px; margin-bottom: 16px; }
 .wzdots i { width: 24px; height: 4px; border-radius: 20px; background: rgba(255, 255, 255, 0.13); }
 .wzdots i.on { background: var(--teal); }
