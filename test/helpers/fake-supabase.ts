@@ -78,6 +78,9 @@ export function fakeSupabase(
       } else if (filter.op === 'in') {
         const allowed = filter.value as unknown[];
         out = out.filter((r) => allowed.includes((r as Record<string, unknown>)[filter.column!]));
+      } else if (filter.op === 'is') {
+        const value = (r: unknown) => (r as Record<string, unknown>)[filter.column!];
+        out = out.filter((r) => value(r) === filter.value || (filter.value === null && value(r) === undefined));
       } else if (filter.op === 'limit') {
         out = out.slice(0, Number(filter.value));
       }
@@ -125,8 +128,16 @@ export function fakeSupabase(
         rows: written,
       });
       return written;
+    } else if (call.method === 'update') {
+      // PostgREST updates every row the filters select. Merging in place keeps
+      // the stored reference stable, so a later read sees the new values.
+      const matching = applyFilters(tables[call.table] ?? [], call) as Array<Record<string, unknown>>;
+      const patch = { ...(call.payload as Record<string, unknown>) };
+      matching.forEach((row) => Object.assign(row, patch));
+      options.onChange?.({ table: call.table, method: 'update', rows: matching });
+      return matching;
     } else if (call.method === 'delete') {
-      const store = tables[call.table] ?? [];
+      const store = (tables[call.table] ?? []) as Array<Record<string, unknown>>;
       const inFilter = call.filters.find((f) => f.op === 'in');
       const eqFilter = call.filters.find((f) => f.op === 'eq');
       let removed: Array<Record<string, unknown>> = [];
@@ -226,6 +237,10 @@ export function fakeSupabase(
         call.filters.push({ op: 'in', column, value: values });
         return chain;
       },
+      is(column, value) {
+        call.filters.push({ op: 'is', column, value });
+        return chain;
+      },
       order(column, opts) {
         call.filters.push({ op: 'order', column, value: opts });
         return chain;
@@ -238,11 +253,13 @@ export function fakeSupabase(
         call.single = true;
         return chain;
       },
-      then(onFulfilled, onRejected) {
-        return Promise.resolve(call.resolve()).then(
-          onFulfilled,
-          onRejected,
-        ) as PromiseLike<SupabaseLikeResult>;
+      then<TResult1 = SupabaseLikeResult, TResult2 = never>(
+        onFulfilled?: ((value: SupabaseLikeResult) => TResult1 | PromiseLike<TResult1>) | null,
+        onRejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+      ): PromiseLike<TResult1 | TResult2> {
+        // The signature has to mirror `PromiseLike` exactly, or the builder is
+        // not assignable to `SupabaseLikeQuery` in the first place.
+        return Promise.resolve(call.resolve()).then(onFulfilled, onRejected);
       },
     };
     return chain;

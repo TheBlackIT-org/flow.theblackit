@@ -264,6 +264,32 @@ describe('team', () => {
     d.addMember('Solo', 'Owner', 'owner');
     expect(d.removeMember(d.workspace.members[0]!.id).ok).toBe(false);
   });
+
+  it('carries the sign-in identity when there is one', () => {
+    // The domain never asks who is signed in; it stores what it is handed, so
+    // the whole rule set stays testable in Node.
+    const d = new FlowDomain(emptyWorkspace(), { storage: fakeStorage() });
+    const owner = d.addMember('Arjun', 'Founder', 'owner', { email: 'arjun@x.com', userId: 'auth-1' });
+    expect(owner.email).toBe('arjun@x.com');
+    expect(owner.userId).toBe('auth-1');
+    // The first member also becomes the acting user, as before.
+    expect(d.workspace.me).toBe(owner.id);
+  });
+
+  it('invites by email alone, without binding anybody yet', () => {
+    const d = new FlowDomain(emptyWorkspace(), { storage: fakeStorage() });
+    const invited = d.addMember('Sneha', '', 'member', { email: 'sneha@x.com' });
+    expect(invited.email).toBe('sneha@x.com');
+    // Unbound: the row is claimed on her first sign-in, not before.
+    expect(invited.userId).toBeUndefined();
+  });
+
+  it('leaves the browser-local member exactly as it was', () => {
+    const d = new FlowDomain(emptyWorkspace(), { storage: fakeStorage() });
+    const local = d.addMember('Rahul', 'Backend');
+    expect(local.email).toBeUndefined();
+    expect(local.userId).toBeUndefined();
+  });
 });
 
 describe('assistant', () => {

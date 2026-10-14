@@ -32,7 +32,7 @@ import {
   type FlowDomain,
 } from './domain';
 import type { PresencePeer } from './repository/types';
-import type { ChatMessage, ParsedTask, Task } from './types';
+import type { AuthUser, ChatMessage, ParsedTask, Task } from './types';
 
 export interface ChatState {
   open: boolean;
@@ -83,11 +83,28 @@ function statusIcon(status: string): string {
 }
 
 /**
+ * The face of a signed-in account, which is not a workspace member yet.
+ *
+ * `avatar()` reads a member out of the domain, so it has nothing to draw for
+ * somebody signing in for the first time — before they are a member at all.
+ */
+export function accountAvatar(account: AuthUser, big = false): string {
+  const initials = account.name
+    .split(/\s+/)
+    .map((w) => w[0] ?? '')
+    .slice(0, 2)
+    .join('');
+  return `<span class="av" style="background:#5b9bff${
+    big ? ';width:28px;height:28px;font-size:11px' : ''
+  }" title="${esc(account.email ?? account.name)}">${esc(initials)}</span>`;
+}
+
+/**
  * The ⋯ menu. Deliberately small: create work, manage people, wipe everything
  * back to a blank workspace, or take the data out. The demo workspace is only
  * offered on the first-run welcome screen.
  */
-export function projectMenu(): string {
+export function projectMenu(account?: AuthUser | null): string {
   return (
     '<div class="pop ws" data-pop="ws">' +
     '<div class="lbl">Project</div>' +
@@ -97,6 +114,11 @@ export function projectMenu(): string {
     '<div class="sep"></div>' +
     '<button class="mi" data-act="ws-export">Export data as JSON</button>' +
     '<button class="mi" data-act="ws-help">Ask the assistant</button>' +
+    (account
+      ? '<div class="sep"></div>' +
+        `<div class="lbl">${esc(account.name)}${account.email ? ` · ${esc(account.email)}` : ''}</div>` +
+        '<button class="mi" data-act="auth-signout">Sign out</button>'
+      : '') +
     '<div class="sep"></div>' +
     '<button class="mi danger" data-act="ws-fresh">Reset everything</button>' +
     '</div>'
@@ -106,15 +128,23 @@ export function projectMenu(): string {
 /** Header control cluster: project picker, acting-as picker, workspace menu. */
 /** The ⋯ button and its popover. Rendered into its own header slot so the
  *  controls column can be sized independently of it. */
-export function renderMenuButton(): string {
+export function renderMenuButton(account?: AuthUser | null): string {
   return (
     '<button class="btn sm" data-act="wsmenu" aria-label="Project menu" aria-haspopup="menu">' +
     '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>' +
-    `</button>${projectMenu()}`
+    `</button>${projectMenu(account)}`
   );
 }
 
-export function renderControls(domain: FlowDomain): string {
+/**
+ * The header controls.
+ *
+ * With a signed-in account the *Acting as* picker is gone: it let anyone
+ * become anyone, which makes every owner, claim time and audit entry a
+ * statement about a dropdown rather than a person. Without a backend there is
+ * no account, and the picker is the only way to be somebody.
+ */
+export function renderControls(domain: FlowDomain, account?: AuthUser | null): string {
   const P = domain.currentProject;
   const db = domain.workspace;
   return (
@@ -128,13 +158,17 @@ export function renderControls(domain: FlowDomain): string {
           .join('') +
         '</select></div>'
       : '<div class="fld"><span>Project</span><select disabled><option>No project yet</option></select></div>') +
-    '<div class="fld"><span>Acting as</span><select data-act="me">' +
-    (db.members.length
-      ? db.members
-          .map((m) => `<option value="${esc(m.id)}" ${m.id === db.me ? 'selected' : ''}>${esc(m.name)}</option>`)
-          .join('')
-      : '<option>Nobody yet</option>') +
-    '</select></div>' +
+    (account
+      ? '<div class="fld"><span>Signed in</span><div class="mchip">' +
+        accountAvatar(account) +
+        `<b>${esc(account.name)}</b></div></div>`
+      : '<div class="fld"><span>Acting as</span><select data-act="me">' +
+        (db.members.length
+          ? db.members
+              .map((m) => `<option value="${esc(m.id)}" ${m.id === db.me ? 'selected' : ''}>${esc(m.name)}</option>`)
+              .join('')
+          : '<option>Nobody yet</option>') +
+        '</select></div>') +
     '<button class="btn sm" data-act="new-project">+ Project</button>' +
     `<button class="btn sm" data-act="team">Team${db.members.length ? ` (${db.members.length})` : ''}</button>`
   );
@@ -424,6 +458,159 @@ export function renderWelcome(domain: FlowDomain): string {
   );
 }
 
+/* --------------------------------- sign-in ------------------------------- */
+
+/**
+ * Which card the sign-in overlay is showing.
+ *
+ * `signin` and `sent` are the unauthenticated half; `not-invited` and `error`
+ * are shown to somebody who *is* authenticated but cannot use the workspace
+ * yet — a different problem, and a different sentence to fix it. `claim` is the
+ * one-time bootstrap for a workspace whose member rows predate sign-in and
+ * therefore carry no email to invite anybody by.
+ */
+export type AuthStep = 'signin' | 'sent' | 'not-invited' | 'error' | 'claim';
+
+/** A member row offered by the one-time bootstrap picker. */
+export interface ClaimableMember {
+  id: string;
+  name: string;
+  title: string;
+}
+
+export interface AuthScreenState {
+  step: AuthStep;
+  /** The address typed, or the one a code was sent to. */
+  email: string;
+  /** One line under the headline: an error, or what to do next. */
+  message: string;
+  /** The signed-in account, once there is one. */
+  account: AuthUser | null;
+  /** Only for `claim`: the names nobody has claimed yet. */
+  claimable?: ClaimableMember[];
+}
+
+const GITHUB_MARK =
+  '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.36 1.09 2.93.83.09-.65.35-1.09.64-1.34-2.22-.25-4.56-1.11-4.56-4.95 0-1.09.39-1.99 1.03-2.69-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.03a9.4 9.4 0 0 1 5 0c1.91-1.3 2.75-1.03 2.75-1.03.55 1.38.2 2.4.1 2.65.64.7 1.03 1.6 1.03 2.69 0 3.85-2.35 4.7-4.58 4.94.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>';
+
+/**
+ * The sign-in overlay.
+ *
+ * Rendered into the same fixed overlay the first-run welcome uses, so it is
+ * impossible for both to be on screen at once and there is one place that
+ * decides whether the board is visible.
+ */
+export function renderAuthScreen(state: AuthScreenState): string {
+  const logo =
+    '<div class="wlogo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="4" r="2.4"/><circle cx="12" cy="12" r="2.4"/><circle cx="12" cy="20" r="2.4"/><path d="M12 6.4v3.2M12 14.4v3.2"/></svg></div>';
+  const message = state.message ? `<div class="authmsg">${esc(state.message)}</div>` : '';
+  const who = state.account?.email ?? state.account?.name ?? 'this account';
+
+  if (state.step === 'not-invited') {
+    return (
+      '<div class="wcard">' +
+      logo +
+      '<h2>Not on this workspace yet</h2>' +
+      '<div class="wsub">You are signed in as <b>' +
+      esc(who) +
+      '</b>, but no member here is connected to that account. Ask an owner to add you under <b>Team</b> with this address — then check again.</div>' +
+      message +
+      '<div class="authacts">' +
+      '<button class="btn primary" data-act="auth-retry">Check again</button>' +
+      '<button class="btn ghost" data-act="auth-signout">Sign out</button>' +
+      '</div>' +
+      '</div>'
+    );
+  }
+
+  if (state.step === 'claim') {
+    const options = (state.claimable ?? [])
+      .map(
+        (m) =>
+          `<button class="claimrow" data-act="auth-claim" data-id="${esc(m.id)}">` +
+          `<span class="claimname">${esc(m.name)}</span>` +
+          `<span class="claimtitle">${esc(m.title)}</span>` +
+          '</button>',
+      )
+      .join('');
+    // No names left to offer (the last one was taken while this was on screen):
+    // fall back to the invitation wording rather than an empty card.
+    if (!options) {
+      return renderAuthScreen({ ...state, step: 'not-invited', claimable: [] });
+    }
+    return (
+      '<div class="wcard">' +
+      logo +
+      '<h2>Which one of these are you?</h2>' +
+      '<div class="wsub">You are signed in as <b>' +
+      esc(who) +
+      '</b>. This workspace was set up before sign-in existed, so nobody here is connected to an account yet. Pick your name once and it becomes yours — after that, joining is by invitation.</div>' +
+      message +
+      '<div class="claimlist">' +
+      options +
+      '</div>' +
+      '<div class="authacts">' +
+      '<button class="btn ghost" data-act="auth-signout">None of these · sign out</button>' +
+      '</div>' +
+      '</div>'
+    );
+  }
+
+  if (state.step === 'error') {
+    return (
+      '<div class="wcard">' +
+      logo +
+      '<h2>Could not open the workspace</h2>' +
+      '<div class="wsub">You are signed in, but the shared workspace could not be read. This is usually a database that still needs its migrations, or a connection problem.</div>' +
+      message +
+      '<div class="authacts">' +
+      '<button class="btn primary" data-act="auth-retry">Try again</button>' +
+      '<button class="btn ghost" data-act="auth-signout">Sign out</button>' +
+      '</div>' +
+      '</div>'
+    );
+  }
+
+  if (state.step === 'sent') {
+    return (
+      '<div class="wcard">' +
+      logo +
+      '<h2>Check your email</h2>' +
+      '<div class="wsub">A sign-in link is on its way to <b>' +
+      esc(state.email) +
+      '</b>. Open it, or type the code from the same email below. It expires in an hour.</div>' +
+      message +
+      '<div class="f"><label>Code from the email</label><input type="text" id="authCode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" /></div>' +
+      '<div class="authacts">' +
+      '<button class="btn primary" data-act="auth-code">Sign in</button>' +
+      '<button class="btn ghost" data-act="auth-other">Use a different email</button>' +
+      '</div>' +
+      '<div class="wfoot">Nothing here has a password to remember, reset, or leak.</div>' +
+      '</div>'
+    );
+  }
+
+  return (
+    '<div class="wcard">' +
+    logo +
+    '<h2>Sign in to BlackIT Flow</h2>' +
+    '<div class="wsub">Your team shares one workspace. Signing in is what makes an owner an owner: assignments, take-times and the activity trail point at a person instead of a dropdown.</div>' +
+    message +
+    '<div class="wopts authone">' +
+    '<button class="wopt primary" data-act="auth-github"><div class="wt">' +
+    GITHUB_MARK +
+    ' Continue with GitHub</div><div class="wd">No password. Uses the GitHub account your team already knows you by.</div></button>' +
+    '</div>' +
+    '<div class="authdiv"><span>or use an email link</span></div>' +
+    '<div class="f"><label>Work email</label><input type="email" id="authEmail" value="' +
+    esc(state.email) +
+    '" placeholder="you@theblackit.com" autocomplete="email" /></div>' +
+    '<div class="authacts"><button class="btn primary" data-act="auth-email">Email me a sign-in link</button></div>' +
+    '<div class="wfoot">Sign-in is invitation based: an owner adds your email under Team first. Anyone outside the workspace sees an empty page.</div>' +
+    '</div>'
+  );
+}
+
 /* --------------------------------- modal -------------------------------- */
 
 export function modalShell(title: string, body: string, footer: string): string {
@@ -489,23 +676,28 @@ export function projectBody(domain: FlowDomain): string {
 
 export function teamBody(domain: FlowDomain): string {
   const rows = domain.workspace.members
-    .map(
-      (m) =>
+    .map((m) => {
+      const meta = [m.title || m.role, m.email].filter(Boolean).join(' · ');
+      return (
         '<div class="mrow">' +
         avatar(domain, m.id) +
-        `<div class="mname"><div>${esc(m.name)}</div><div>${esc(m.title || m.role)}</div></div>` +
+        `<div class="mname"><div>${esc(m.name)}${
+          m.userId ? ' <span class="mchip">signed in</span>' : m.email ? ' <span class="mchip">invited</span>' : ''
+        }</div><div>${esc(meta)}</div></div>` +
         `<select data-act="mrole" data-id="${esc(m.id)}">${['owner', 'lead', 'member']
           .map((r) => `<option value="${r}" ${m.role === r ? 'selected' : ''}>${r}</option>`)
           .join('')}</select>` +
-        `<button class="btn ghost sm" data-act="del-member" data-id="${esc(m.id)}" title="Remove from workspace">✕</button></div>`,
-    )
+        `<button class="btn ghost sm" data-act="del-member" data-id="${esc(m.id)}" title="Remove from workspace">✕</button></div>`
+      );
+    })
     .join('');
   return (
     `<div>${rows || '<div class="subempty">Nobody here yet. Add yourself first.</div>'}</div>` +
     '<div class="sep" style="margin:14px 0"></div>' +
     '<div class="f"><label>Add a teammate</label><input type="text" id="mNew" placeholder="Name" /></div>' +
+    '<div class="f"><label>Their email · optional</label><input type="email" id="mEmail" placeholder="them@theblackit.com" /></div>' +
     '<div class="f"><label>Title · optional</label><input type="text" id="mTitle" placeholder="e.g. Frontend engineer" /></div>' +
-    '<div class="wznote">Roles are labels for now: owner, lead, member. Everyone can claim, add subtasks and update status.</div>'
+    '<div class="wznote">Add their email and it becomes their invite: the first time they sign in with that address they become this member, with their own name on everything they take. Roles are labels: owner, lead, member.</div>'
   );
 }
 
@@ -535,7 +727,7 @@ export function stepDots(step: number): string {
   return `<div class="wzdots">${[1, 2, 3].map((i) => `<i class="${i <= step ? 'on' : ''}"></i>`).join('')}</div>`;
 }
 
-export function wizardBody(wz: WizardState): string {
+export function wizardBody(wz: WizardState, signedIn = false): string {
   const key = keyFrom(wz.project);
   if (wz.step === 1) {
     return (
@@ -555,8 +747,14 @@ export function wizardBody(wz: WizardState): string {
   }
   return (
     stepDots(wz.step) +
-    `<div class="f"><label>Teammates, one name per line · optional</label><textarea id="wzTeam" rows="4" placeholder="Nithin Raj&#10;Sneha Thomas">${esc(wz.team)}</textarea></div>` +
-    '<div class="wznote">They show up in “Acting as” and can take unowned tasks. Add or remove people later from the Team button.</div>'
+    `<div class="f"><label>${
+      signedIn ? 'Teammates · name and email, one per line' : 'Teammates, one name per line · optional'
+    }</label><textarea id="wzTeam" rows="4" placeholder="${
+      signedIn ? 'Nithin Raj &lt;nithin@theblackit.com&gt;&#10;Sneha Thomas' : 'Nithin Raj&#10;Sneha Thomas'
+    }">${esc(wz.team)}</textarea></div>` +
+    (signedIn
+      ? '<div class="wznote">An email is an invitation: the first time that person signs in with it, they become this member and their name goes on everything they take. Add or change people later from the Team button.</div>'
+      : '<div class="wznote">They show up in “Acting as” and can take unowned tasks. Add or remove people later from the Team button.</div>')
   );
 }
 

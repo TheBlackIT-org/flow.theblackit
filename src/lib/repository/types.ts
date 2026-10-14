@@ -14,7 +14,7 @@
  * which implementation is active.
  */
 
-import type { Member, Workspace } from '../types';
+import type { AuthUser, Member, Workspace } from '../types';
 
 /** A single row change delivered by the backend. */
 export interface RowChange {
@@ -91,6 +91,32 @@ export interface WorkspaceRepository {
 
   /** Atomically reserve the next task key for a project (NE-1, NE-2, …). */
   nextTaskKey(projectId: string, fallback: () => string): Promise<string>;
+
+  /**
+   * Bind a signed-in account to the member row it belongs to.
+   *
+   * Two ways to belong: the row already names this account (`user_id` matches),
+   * or the row is an unclaimed invite whose `email` matches the account. In the
+   * second case the claim is written back, so the next sign-in finds it directly.
+   *
+   * Returns `null` when neither matches — the account is signed in but not on
+   * this workspace — and also when no workspace exists yet, because the first
+   * person through the door creates it and is bound by the setup wizard.
+   */
+  linkAccount(user: AuthUser): Promise<Member | null>;
+
+  /**
+   * Bind this account to a member row that nobody has claimed yet.
+   *
+   * Only for a workspace that has **never** been claimed by anybody — the
+   * one-time bootstrap for a team that existed before sign-in, whose member
+   * rows carry no email to invite them by. Refuses as soon as any member has a
+   * `user_id`, so the window closes the moment the first person is through, and
+   * from then on the only way in is an email invitation.
+   *
+   * Returns null when the row is unknown or was claimed in the meantime.
+   */
+  claimMember(memberId: string, user: AuthUser): Promise<Member | null>;
 
   /** Realtime (or polling) updates plus presence. Returns an unsubscribe fn. */
   subscribe(handlers: SubscribeHandlers, me: Member | null): () => void;

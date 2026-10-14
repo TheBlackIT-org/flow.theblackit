@@ -6,6 +6,9 @@
 import { describe, expect, it } from 'vitest';
 import { FlowDomain, seed } from '../src/lib/domain';
 import {
+  accountAvatar,
+  projectMenu,
+  renderAuthScreen,
   renderChain,
   renderChat,
   renderControls,
@@ -17,6 +20,7 @@ import {
   previewHtml,
   type ChatState,
 } from '../src/lib/render';
+import type { AuthUser } from '../src/lib/types';
 
 const PAYLOAD = '<img src=x onerror="window.__pwned=1">';
 const QUOTE_BREAK = `" onmouseover="window.__pwned=2" x="`;
@@ -30,6 +34,9 @@ function poisoned(): FlowDomain {
   ws.projects[0]!.product = QUOTE_BREAK;
   ws.members[0]!.name = PAYLOAD;
   ws.members[0]!.title = SCRIPT;
+  // The invite address is echoed back on the team screen, on the "not invited"
+  // card and in the ⋯ menu, so it has to travel the same escaping path.
+  ws.members[0]!.email = QUOTE_BREAK;
   ws.types[0]!.name = PAYLOAD;
   d.workspace.tasks.forEach((t, i) => {
     t.title = `${PAYLOAD}${i}`;
@@ -110,6 +117,34 @@ describe('hostile user input stays inert', () => {
     // A blocked-task listing interpolates keys and titles into the transcript.
     const r = d.reply('what is blocked?');
     expectInert(r.html, 'assistant answer');
+  });
+});
+
+describe('hostile account data stays inert', () => {
+  const HOSTILE: AuthUser = { id: 'u-1', email: PAYLOAD, name: SCRIPT, avatarUrl: null };
+
+  it('escapes every step of the sign-in screen', () => {
+    expectInert(renderAuthScreen({ step: 'signin', email: PAYLOAD, message: SCRIPT, account: null }), 'auth signin');
+    expectInert(renderAuthScreen({ step: 'sent', email: QUOTE_BREAK, message: PAYLOAD, account: null }), 'auth sent');
+    expectInert(
+      renderAuthScreen({ step: 'not-invited', email: '', message: PAYLOAD, account: HOSTILE }),
+      'auth not invited',
+    );
+    expectInert(
+      renderAuthScreen({ step: 'error', email: '', message: QUOTE_BREAK, account: HOSTILE }),
+      'auth error',
+    );
+  });
+
+  it('escapes the signed-in header chip and the ⋯ menu', () => {
+    // The account name and email reach both, straight from the provider.
+    expectInert(renderControls(poisoned(), HOSTILE), 'account chip');
+    expectInert(projectMenu(HOSTILE), 'account menu');
+    expectInert(accountAvatar(HOSTILE), 'account avatar');
+  });
+
+  it('escapes invite addresses on the team screen', () => {
+    expectInert(teamBody(poisoned()), 'team invites');
   });
 });
 

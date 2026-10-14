@@ -929,7 +929,10 @@ describe('SyncController — pending count is honest', () => {
     expect(statuses.at(-1)).toBe(2);
 
     // Let the in-flight write finish: it covered only the first edit.
-    releaseWrite?.();
+    // Read through a local: TypeScript narrows `releaseWrite` to its initial
+    // `null`, because the only assignment happens inside the executor above.
+    const release = releaseWrite as (() => void) | null;
+    release?.();
     await new Promise((r) => setTimeout(r, 20));
 
     // One edit is still outstanding, so the count must not be zero.
@@ -1046,7 +1049,8 @@ describe('resync never discards unsaved work', () => {
 
   it('a recovered write clears the failure state, not just the message', async () => {
     const h = scene({ flushWorks: false });
-    await h.sync.start();
+    // `me` is presence only; an unauthenticated test client passes null.
+    await h.sync.start(null);
     h.sync.schedule(h.local, { urgent: true });
     await vi.waitFor(() => expect(h.status().state).toBe('error'));
 

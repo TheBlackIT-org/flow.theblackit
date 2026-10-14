@@ -936,8 +936,24 @@ export class FlowDomain {
     return position;
   }
 
-  addMember(name: string, title = '', role: Member['role'] = 'member'): Member {
+  /**
+   * Add somebody to the workspace.
+   *
+   * `account` carries the sign-in identity when there is one: an email is an
+   * invitation (the first account to sign in with it claims this row), and a
+   * user id binds it immediately. The domain treats both as plain data — it
+   * never asks who is signed in, which is what keeps it testable in Node.
+   */
+  addMember(
+    name: string,
+    title = '',
+    role: Member['role'] = 'member',
+    account?: { email?: string | null; userId?: string | null },
+  ): Member {
     const m: Member = { id: uid('m'), name: name.trim(), role, title: title.trim() };
+    const email = (account?.email ?? '').trim();
+    if (email) m.email = email;
+    if (account?.userId) m.userId = account.userId;
     this.workspace.members.push(m);
     if (!this.workspace.me) this.workspace.me = m.id;
     this.save();

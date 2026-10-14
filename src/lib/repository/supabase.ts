@@ -16,7 +16,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { emptyWorkspace } from '../domain';
-import type { Member, Subtask, Task, Workspace } from '../types';
+import type { AuthUser, Member, Subtask, Task, Workspace } from '../types';
 import {
   iso,
   memberFromRow,
@@ -88,6 +88,8 @@ export interface SupabaseLikeQuery extends PromiseLike<SupabaseLikeResult> {
   delete(): SupabaseLikeQuery;
   eq(column: string, value: unknown): SupabaseLikeQuery;
   in(column: string, values: unknown[]): SupabaseLikeQuery;
+  /** `column is null` — PostgREST cannot express that with `eq`. */
+  is(column: string, value: unknown): SupabaseLikeQuery;
   order(column: string, opts?: unknown): SupabaseLikeQuery;
   limit(count: number): SupabaseLikeQuery;
   single(): SupabaseLikeQuery;
@@ -474,6 +476,111 @@ export class SupabaseRepository implements WorkspaceRepository {
       return fallback();
     }
     return String(data);
+  }
+
+  /* ------------------------------ identity --------------------------- */
+
+  /**
+   * Bind a signed-in account to its member row.
+   *
+   * The row is found two ways, in order of authority:
+   *   1. it already names this account (`user_id`), so a returning teammate
+   *      signs straight back in even if they changed their email;
+   *   2. it is an unclaimed invite whose `email` matches, and claiming writes
+   *      `user_id` back so every later sign-in takes path 1.
+   *
+   * Matching happens here rather than in SQL because `email` may not exist yet
+   * on a deployment that has not run `0003_member_identity.sql`, and a failed
+   * `ilike` would be indistinguishable from "no invite". Reading the unclaimed
+   * rows and comparing in JS can tell those two cases apart, and says so.
+   */
+  async linkAccount(user: AuthUser): Promise<Member | null> {
+    const id = this.workspaceId ?? (await this.ensureWorkspaceId());
+    // No workspace yet: this account is the first one through the door. The
+    // setup wizard creates the owner row and binds it, so there is nothing to
+    // link to here.
+    if (!id) return null;
+
+    const bound = await this.client
+      .from('members')
+      .select('*')
+      .eq('workspace_id', id)
+      .eq('user_id', user.id)
+      .limit(1);
+    if (bound.error) throw new Error(`Could not read your member row: ${bound.error.message}`);
+    const boundRow = ((bound.data ?? []) as Row[])[0];
+    if (boundRow) return memberFromRow(boundRow);
+
+    const email = (user.email ?? '').trim().toLowerCase();
+    if (!email) return null;
+
+    const open = await this.client
+      .from('members')
+      .select('*')
+      .eq('workspace_id', id)
+      .is('user_id', null);
+    if (open.error) throw new Error(`Could not read the team: ${open.error.message}`);
+    const openRows = (open.data ?? []) as Row[];
+
+    // PostgREST omits a column that does not exist, so its absence on rows that
+    // clearly exist means the identity migration has not been applied. Without
+    // this check the app would report "you are not invited", which is wrong and
+    // sends the person asking an owner for an invite they already have.
+    if (openRows.length && !openRows.some((row) => 'email' in row)) {
+      throw new Error(
+        'This database has no members.email column yet. Run supabase/migrations/0003_member_identity.sql, then reload.',
+      );
+    }
+
+    const match = openRows.find((row) => str(row.email).trim().toLowerCase() === email);
+    if (!match) return null;
+
+    const claimed = await this.client
+      .from('members')
+      .update({ user_id: user.id })
+      .eq('id', str(match.id));
+    if (claimed.error) throw new Error(`Could not claim your invite: ${claimed.error.message}`);
+
+    return memberFromRow({ ...match, user_id: user.id });
+  }
+
+  /**
+   * The one-time bootstrap for a workspace that predates sign-in.
+   *
+   * Those member rows have names but no email, so there is nothing for
+   * `linkAccount` to match and every teammate would be locked out. While
+   * *nobody* in the workspace is bound, an account may claim one row by
+   * choosing its name. The guard is re-checked here rather than trusted from
+   * the UI, and the update itself only touches a row that is still unbound, so
+   * two people racing cannot both win.
+   */
+  async claimMember(memberId: string, user: AuthUser): Promise<Member | null> {
+    const id = this.workspaceId ?? (await this.ensureWorkspaceId());
+    if (!id) return null;
+
+    const existing = await this.client.from('members').select('*').eq('workspace_id', id);
+    if (existing.error) throw new Error(`Could not read the team: ${existing.error.message}`);
+    const rows = (existing.data ?? []) as Row[];
+
+    // Anybody already bound means the bootstrap is over: from here on the way
+    // in is an email invitation, not a name pick.
+    if (rows.some((row) => strOrNull(row.user_id))) return null;
+
+    const target = rows.find((row) => str(row.id) === memberId);
+    if (!target) return null;
+
+    const claimed = await this.client
+      .from('members')
+      .update({ user_id: user.id })
+      .eq('id', memberId)
+      .is('user_id', null)
+      .select('id')
+      .single();
+    if (claimed.error) throw new Error(`Could not claim ${str(target.name, 'that name')}: ${claimed.error.message}`);
+    // No row came back: somebody else claimed it between the read and the write.
+    if (!claimed.data) return null;
+
+    return memberFromRow({ ...target, user_id: user.id });
   }
 
   /* ----------------------------- realtime ---------------------------- */

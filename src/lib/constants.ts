@@ -117,6 +117,13 @@ export const ACTIONS = [
   'chat-send',
   'chat-discard',
   'chat-add',
+  'auth-github',
+  'auth-email',
+  'auth-code',
+  'auth-other',
+  'auth-retry',
+  'auth-claim',
+  'auth-signout',
   'close-modal',
   'submit-modal',
 ] as const;

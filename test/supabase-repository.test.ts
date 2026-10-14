@@ -730,7 +730,7 @@ describe('a deleted workspace heals itself', () => {
     // that no longer exists. Without recovery every later write fails and the
     // user has to reload the page.
     const fake = fakeSupabase({ workspaces: [{ id: WS }], members: [], projects: [], tasks: [] });
-    const supabase = new SupabaseRepository(fake, 'BlackIT Flow');
+    const supabase = repo(fake);
     const ws: Workspace = {
       ...emptyWorkspace(),
       mode: 'live',
@@ -765,7 +765,7 @@ describe('a new project carries a task counter', () => {
     // made the insert fail with "null value in column task_counter", so no
     // project created in the app could ever be saved.
     const fake = fakeSupabase({ workspaces: [{ id: WS }], members: [], projects: [], tasks: [] });
-    const supabase = new SupabaseRepository(fake, 'BlackIT Flow');
+    const supabase = repo(fake);
     const ws: Workspace = {
       ...emptyWorkspace(),
       mode: 'live',

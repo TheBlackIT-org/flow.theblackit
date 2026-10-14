@@ -24,7 +24,14 @@ const LATER_SQL = readdirSync(new URL('../supabase/migrations', import.meta.url)
   .sort()
   .map((f) => readFileSync(new URL(`../supabase/migrations/${f}`, import.meta.url), 'utf8'));
 
-/** Column names declared for a table in the migration. */
+/**
+ * Column names declared for a table.
+ *
+ * Reads `0001_init.sql` **and** every later migration: the schema a client
+ * actually talks to is the sum of all of them, so a column added by an ALTER is
+ * as declared as one in the original CREATE. Only counting the first file made
+ * a legitimate new column — `members.email` — look like drift.
+ */
 function columnsOf(table: string): Set<string> {
   const match = SQL.match(new RegExp(`create table if not exists ${table} \\(([\\s\\S]*?)\\n\\);`));
   if (!match) throw new Error(`table ${table} not found in the migration`);
@@ -34,6 +41,10 @@ function columnsOf(table: string): Set<string> {
     if (!trimmed || trimmed.startsWith('--')) continue;
     const name = trimmed.split(/\s+/)[0];
     if (name && /^[a-z_]+$/.test(name)) columns.add(name);
+  }
+  for (const sql of LATER_SQL) {
+    const added = new RegExp(`alter table ${table}\\s+add column if not exists ([a-z_]+)`, 'gi');
+    for (const m of sql.matchAll(added)) columns.add(m[1]!);
   }
   return columns;
 }
@@ -106,14 +117,22 @@ describe('mapper rows only use declared columns', () => {
     // the column, PostgREST rejects the whole upsert and the write is lost —
     // which is exactly what happened to `members` and `projects`.
     for (const table of ['tasks', 'subtasks', 'projects', 'members', 'activity']) {
-      const declared =
-        columnsOf(table).has('mutation_id') ||
-        // Later migrations may add it; both files count as the schema.
-        LATER_SQL.some((sql) =>
-          new RegExp(`alter table ${table}\\s+add column if not exists mutation_id`, 'i').test(sql),
-        );
-      expect(declared, `${table} is written with a mutation_id but has no column`).toBe(true);
+      expect(columnsOf(table).has('mutation_id'), `${table} is written with a mutation_id but has no column`).toBe(
+        true,
+      );
     }
+  });
+
+  it('declares the identity columns sign-in binds against', () => {
+    // `user_id` has been reserved since 0001; `email` is what an invite is
+    // addressed to, and the claim in `linkAccount` matches on it.
+    const members = columnsOf('members');
+    expect(members.has('user_id'), 'members.user_id missing').toBe(true);
+    expect(members.has('email'), 'members.email missing').toBe(true);
+    // One account, one member row — the claim would be ambiguous otherwise.
+    const identity = LATER_SQL.join('\n');
+    expect(identity).toMatch(/unique index if not exists members_user_id_key/i);
+    expect(identity).toMatch(/unique index if not exists members_workspace_email_key/i);
   });
 
   it('exposes the audit columns the activity feed reads', () => {
@@ -121,5 +140,31 @@ describe('mapper rows only use declared columns', () => {
     for (const column of ['actor_id', 'actor_name', 'action', 'task_key', 'summary', 'created_at']) {
       expect(declared.has(column), `activity.${column} missing`).toBe(true);
     }
+  });
+});
+
+describe('the row-level-security cutover', () => {
+  const tighten = LATER_SQL.find((sql) => /tighten Row Level Security/i.test(sql)) ?? '';
+
+  it('ships a migration that stops trusting the anon key', () => {
+    expect(tighten, 'no RLS-tightening migration found').not.toBe('');
+    // The permissive policies from 0001 are dropped, not merely shadowed.
+    expect(tighten).toMatch(/drop policy if exists %I on %I/);
+    expect(tighten).toMatch(/revoke all on %I from anon/);
+  });
+
+  it('resolves membership through SECURITY DEFINER helpers', () => {
+    // A policy on `members` that queried `members` would recurse; the helper is
+    // what makes the policy expressible at all.
+    for (const fn of ['is_workspace_member', 'is_project_member', 'is_task_member']) {
+      expect(tighten).toContain(`create or replace function ${fn}`);
+    }
+    expect((tighten.match(/security definer/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('leaves a way to claim an invite without already being a member', () => {
+    // Without this clause the first sign-in can never bind: the account is not
+    // a member yet, so a pure membership check would reject its own claim.
+    expect(tighten).toMatch(/user_id is null and email is not null and lower\(email\) = current_email\(\)/);
   });
 });

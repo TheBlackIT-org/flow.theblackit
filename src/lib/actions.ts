@@ -8,6 +8,8 @@
  */
 
 import { APP_NAME } from './constants';
+import type { AuthPort } from './auth';
+import { looksLikeEmail } from './auth';
 import { esc, keyFrom, type FlowDomain } from './domain';
 import {
   TEAM_FOOTER,
@@ -19,9 +21,10 @@ import {
   teamBody,
   wizardBody,
   wizardFooter,
+  type AuthScreenState,
   type WizardState,
 } from './render';
-import type { ParsedTask, PriorityId } from './types';
+import type { AuthUser, Member, ParsedTask, PriorityId } from './types';
 
 export interface ModalState {
   onOK: ((data: Record<string, string>) => unknown) | null;
@@ -73,6 +76,26 @@ export interface FlowActionsContext {
   replaceDomain(mode: 'demo' | 'fresh'): FlowDomain;
   /** Focus an element by id on the next frame. */
   focus(id: string): void;
+  /** The sign-in service. `configured` is false in the browser-local build. */
+  auth: AuthPort;
+  /** The signed-in account, or null when there is none. */
+  account(): AuthUser | null;
+  /** The current sign-in overlay state, or null once signed in. */
+  authState(): AuthScreenState | null;
+  /** Replace the sign-in overlay. `null` hands the screen back to the board. */
+  renderAuth(state: AuthScreenState | null): void;
+  /**
+   * Re-run the post-sign-in path: bind the account, load the workspace and
+   * show it. Safe to call more than once.
+   */
+  resumeSession(): Promise<void>;
+  /**
+   * One-time bootstrap: bind the signed-in account to an unclaimed member row
+   * by name. Returns null when that is no longer allowed or no longer possible.
+   */
+  claimMember(memberId: string): Promise<Member | null>;
+  /** End the session, forget the cached workspace, and start over. */
+  signOut(): Promise<void>;
 }
 
 export class FlowActions {
@@ -125,6 +148,25 @@ export class FlowActions {
     if (!this.modal.onOK) return;
     const result = this.modal.onOK(this.ctx.formData());
     if (result !== false) this.closeModal();
+  }
+
+  /* ------------------------------ sign-in ------------------------------ */
+
+  /** The sign-in screen state, with any patch applied on top of it. */
+  private authScreen(patch: Partial<AuthScreenState> = {}): AuthScreenState {
+    const current = this.ctx.authState() ?? { step: 'signin', email: '', message: '', account: null };
+    return { ...current, ...patch };
+  }
+
+  /**
+   * The account fields a new member row should carry.
+   *
+   * Undefined in the browser-local workspace, where there is no account to
+   * bind — the row is then an ordinary member like every other.
+   */
+  private accountFields(): { email: string | null; userId: string | null } | undefined {
+    const account = this.ctx.account();
+    return account ? { email: account.email, userId: account.id } : undefined;
   }
 
   /* ------------------------------ actions ------------------------------ */
@@ -296,14 +338,28 @@ export class FlowActions {
       case 'add-member': {
         const name = this.ctx.value('#mNew').trim();
         const title = this.ctx.value('#mTitle').trim();
+        const email = this.ctx.value('#mEmail').trim();
         if (!name) {
           this.ctx.toast('Type a name first');
           break;
         }
-        const m = domain.addMember(name, title);
+        if (email && !looksLikeEmail(email)) {
+          this.ctx.toast('That email address does not look right');
+          break;
+        }
+        // Two members invited under one address would make the first sign-in
+        // ambiguous, and the database rejects the duplicate anyway.
+        if (
+          email &&
+          domain.workspace.members.some((x) => (x.email ?? '').trim().toLowerCase() === email.toLowerCase())
+        ) {
+          this.ctx.toast(`${email} is already on the team`);
+          break;
+        }
+        const m = domain.addMember(name, title, 'member', email ? { email } : undefined);
         this.openTeamModal();
         this.refresh();
-        this.ctx.toast(`${m.name} added to the team`);
+        this.ctx.toast(email ? `${m.name} invited · they sign in with ${email}` : `${m.name} added to the team`);
         break;
       }
 
@@ -411,6 +467,62 @@ export class FlowActions {
 
       case 'chat-add':
         await this.addAssistantTask();
+        break;
+
+      /* ------------------------------ sign-in ------------------------------ */
+
+      case 'auth-github': {
+        const r = await this.ctx.auth.signInWithGitHub();
+        // Success means the browser is on its way to GitHub. Only a failure —
+        // an unconfigured provider, no network — has anything to say here.
+        if (!r.ok) this.ctx.renderAuth(this.authScreen({ message: r.message }));
+        break;
+      }
+
+      case 'auth-email': {
+        const email = this.ctx.value('#authEmail').trim();
+        const r = await this.ctx.auth.sendEmailLink(email);
+        this.ctx.renderAuth(
+          r.ok
+            ? this.authScreen({ step: 'sent', email, message: r.message })
+            : this.authScreen({ email, message: r.message }),
+        );
+        break;
+      }
+
+      case 'auth-code': {
+        const address = this.authScreen().email;
+        const r = await this.ctx.auth.verifyEmailCode(address, this.ctx.value('#authCode'));
+        // A verified code signs the account in, but the session alone is not
+        // the workspace: it still has to be bound to a member and loaded.
+        if (r.ok) await this.ctx.resumeSession();
+        else this.ctx.renderAuth(this.authScreen({ step: 'sent', message: r.message }));
+        break;
+      }
+
+      case 'auth-other':
+        this.ctx.renderAuth(this.authScreen({ step: 'signin', message: '' }));
+        break;
+
+      case 'auth-retry':
+        await this.ctx.resumeSession();
+        break;
+
+      case 'auth-claim': {
+        const member = await this.ctx.claimMember(id);
+        if (!member) {
+          // A stale list: somebody bound that row first, or it no longer
+          // exists. Rebuild from the database — whichever screen comes back
+          // (the remaining names, or "not invited") is the accurate one.
+          this.ctx.toast('That name has just been taken');
+        }
+        await this.ctx.resumeSession();
+        if (member) this.ctx.toast(`Welcome, ${member.name}`);
+        break;
+      }
+
+      case 'auth-signout':
+        await this.ctx.signOut();
         break;
 
       case 'close-modal':
@@ -594,7 +706,9 @@ export class FlowActions {
     if (!this.wizard) return;
     this.showModal(
       'Set up your workspace',
-      wizardBody(this.wizard),
+      // Copy differs once there is a backend: an email is an invite, and the
+      // *Acting as* picker those teammates would have used no longer exists.
+      wizardBody(this.wizard, this.ctx.auth.configured),
       wizardFooter(this.wizard.step),
       null,
     );
@@ -657,7 +771,7 @@ export class FlowActions {
       return;
     }
     const domain = this.ctx.domain;
-    const me = domain.addMember(wz.name, wz.title || 'Owner', 'owner');
+    const me = domain.addMember(wz.name, wz.title || 'Owner', 'owner', this.accountFields());
     domain.workspace.me = me.id;
     const p = domain.createProject(wz.project, keyFrom(wz.project), wz.product.trim() || wz.project);
     if (!skipTeam) {
@@ -665,7 +779,10 @@ export class FlowActions {
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean)
-        .forEach((n) => domain.addMember(n, '', 'member'));
+        .forEach((line) => {
+          const { name, email } = parseTeammate(line);
+          domain.addMember(name, '', 'member', email ? { email } : undefined);
+        });
     }
     domain.workspace.mode = 'fresh';
     domain.workspace.setup = true;
@@ -726,5 +843,21 @@ function statusLabel(id: string): string {
     TODO: 'Not Taken',
   };
   return labels[id] ?? id;
+}
+
+/**
+ * Read one line of the wizard's teammate box.
+ *
+ * Accepts the shapes people actually type — `Nithin Raj <nithin@x.com>`,
+ * `Nithin Raj, nithin@x.com`, `nithin@x.com`, or a bare name — so the same box
+ * serves the browser-local build (names only) and a shared one (names plus
+ * invitation addresses) without asking anybody to learn a format.
+ */
+export function parseTeammate(line: string): { name: string; email: string | null } {
+  const text = line.trim();
+  const email = text.match(/[^\s,<>"']+@[^\s,<>"']+\.[^\s,<>"']+/)?.[0] ?? null;
+  const stripped = (email ? text.replace(email, '') : text).replace(/[<>,"']/g, ' ').trim();
+  const name = stripped || (email ? (email.split('@')[0] ?? email) : text);
+  return { name, email };
 }
 

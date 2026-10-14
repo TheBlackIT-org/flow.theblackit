@@ -11,7 +11,7 @@ import { emptyWorkspace, initialWorkspace, normalise, seed } from '../domain';
 import { isMissingSchemaError } from './supabase';
 import { shouldSeedSample } from './index';
 import { STORAGE_KEY } from '../constants';
-import type { Workspace } from '../types';
+import type { AuthUser, Member, Workspace } from '../types';
 import type { ActivityEntry, ActivityRecord, PresencePeer, WorkspaceRepository } from './types';
 
 export interface LoadResult {
@@ -181,6 +181,20 @@ export class RepositoryHost {
 
   nextTaskKey(projectId: string, fallback: () => string): Promise<string> {
     return this.repo.nextTaskKey(projectId, fallback);
+  }
+
+  /**
+   * Bind the signed-in account to its member row. Null when the account is not
+   * on this workspace yet — the app turns that into "ask an owner to invite
+   * you" rather than silently acting as somebody else.
+   */
+  linkAccount(user: AuthUser): Promise<Member | null> {
+    return this.repo.linkAccount(user);
+  }
+
+  /** One-time bootstrap: claim an unbound row by name, before anybody is bound. */
+  claimMember(memberId: string, user: AuthUser): Promise<Member | null> {
+    return this.repo.claimMember(memberId, user);
   }
 
   logActivity(entry: ActivityEntry, mutationId: string): Promise<void> {

@@ -38,6 +38,10 @@ export function memberFromRow(row: Row): Member {
     title: str(row.title),
   };
   if (row.is_agent) member.agent = true;
+  // Present from `0003_member_identity.sql`. Read defensively so a deployment
+  // that has not run it yet still loads (the columns come back undefined).
+  if (row.email !== undefined) member.email = strOrNull(row.email);
+  if (row.user_id !== undefined) member.userId = strOrNull(row.user_id);
   return member;
 }
 
@@ -98,6 +102,10 @@ export function memberToRow(m: Member, workspaceId: string): Row {
     role: m.role,
     title: m.title,
     is_agent: Boolean(m.agent),
+    // The invite address. `user_id` is deliberately absent: it is set by the
+    // one-off claim (`linkAccount`) and must never ride along on an ordinary
+    // member edit, or a diff-flush would rewrite the binding.
+    email: m.email ?? null,
   };
 }
 

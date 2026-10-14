@@ -35,6 +35,34 @@ export interface Member {
   title: string;
   /** AI agents get the violet avatar and the `AI` chip. */
   agent?: boolean;
+  /**
+   * The address an invite is addressed to. A teammate can be added before
+   * they have ever signed in; the first account to sign in with this email
+   * claims the row.
+   */
+  email?: string | null;
+  /**
+   * The `auth.users` id behind this member, once the invite has been claimed.
+   *
+   * Read from the backend but never written by the sync layer: binding is a
+   * deliberate one-off claim, and a diff-flush that carried this column would
+   * let an ordinary member edit overwrite it.
+   */
+  userId?: string | null;
+}
+
+/**
+ * A signed-in account, as the app needs to know it.
+ *
+ * Deliberately not the provider's user object: the domain and the renderer
+ * only ever need a name, an email and a face, and keeping this shape narrow is
+ * what lets the sign-in screen be tested without an auth service.
+ */
+export interface AuthUser {
+  id: string;
+  email: string | null;
+  name: string;
+  avatarUrl: string | null;
 }
 
 export interface TaskType {

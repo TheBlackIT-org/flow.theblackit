@@ -7,6 +7,7 @@
  */
 
 import { FlowActions, type FlowActionsContext } from './actions';
+import { NoAuth, type AuthPort } from './auth';
 import { APP_NAME, STORAGE_KEY } from './constants';
 import { emptyWorkspace, esc, FlowDomain, seed } from './domain';
 import {
@@ -14,6 +15,7 @@ import {
   chatGreeting,
   fabIcon,
   modalShell,
+  renderAuthScreen,
   renderChain,
   renderChat,
   renderControls,
@@ -25,23 +27,47 @@ import {
   renderHeadProgress,
   renderSubBar,
   renderWelcome,
+  type AuthScreenState,
   type ChatState,
 } from './render';
 import { dropTargetAt, markerTop, type RowRect } from './reorder';
 import { RepositoryHost } from './repository/host';
-import { createRepository, isSupabaseConfigured } from './repository';
+import { createBackend } from './repository';
 import { SyncController, type SyncStatus } from './sync';
 import type { PresencePeer } from './repository/types';
-import type { ParsedTask, Workspace } from './types';
+import type { AuthUser, Member, ParsedTask, Workspace } from './types';
 
 /** Copy shown on the document title and the assistant header. */
 export { APP_NAME };
+
+export interface AppOptions {
+  host?: RepositoryHost;
+  workspace?: Workspace;
+  /** Injectable for tests; production builds it from the environment. */
+  auth?: AuthPort;
+  /** Require a session before the board is shown. */
+  requireLogin?: boolean;
+}
 
 export class BlackitFlowApp {
   domain: FlowDomain;
   private readonly actions: FlowActions;
   private readonly host: RepositoryHost;
   private readonly sync: SyncController;
+  private readonly auth: AuthPort;
+  /** True when this deployment shows a sign-in screen before the board. */
+  private readonly requireLogin: boolean;
+  /** The signed-in account, or null while signed out. */
+  private account: AuthUser | null = null;
+  /** Non-null while the sign-in overlay owns the screen. */
+  private authScreen: AuthScreenState | null = null;
+  /** The member row this account is bound to, once the backend says so. */
+  private boundMemberId: string | null = null;
+  /** True while one boot pass is running, so two cannot interleave. */
+  private adopting = false;
+  /** The account the ⋯ menu was last built for; null = signed out. */
+  private renderedMenuAccount: string | null | undefined = undefined;
+  private unsubscribeAuth: (() => void) | null = null;
   private presence: PresencePeer[] = [];
   private syncStatus: SyncStatus = {
     state: 'offline',
@@ -79,8 +105,14 @@ export class BlackitFlowApp {
    */
   private ready = false;
 
-  constructor(options: { host?: RepositoryHost; workspace?: Workspace } = {}) {
-    this.host = options.host ?? new RepositoryHost(createRepository());
+  constructor(options: AppOptions = {}) {
+    // One backend object, so the repository and the auth port cannot end up on
+    // two different clients — a signed-in deployment whose data client is still
+    // anonymous would look like it worked and share nothing.
+    const backend = options.host ? null : createBackend();
+    this.auth = options.auth ?? backend?.auth ?? new NoAuth();
+    this.requireLogin = Boolean(options.requireLogin ?? backend?.requireLogin) && this.auth.configured;
+    this.host = options.host ?? new RepositoryHost(backend!.repository);
     this.sync = new SyncController(this.host, {
       onWorkspaceChanged: (replacement) => this.onWorkspaceChanged(replacement),
       onActivityChanged: () => void this.loadActivity(),
@@ -105,10 +137,94 @@ export class BlackitFlowApp {
     this.bind();
     this.scrollState();
 
+    let user: AuthUser | null = null;
+    if (this.requireLogin) user = await this.auth.currentUser();
+
+    if (this.requireLogin && !user) {
+      // Everything the board would show is held back: no workspace has been
+      // read yet, and `me` is nobody.
+      this.showAuth({ step: 'signin', email: '', message: '', account: null });
+    } else {
+      await this.adoptSession(user);
+    }
+
+    // Registered *after* the first pass on purpose. Supabase replays the
+    // current session as an INITIAL_SESSION event the moment a listener
+    // attaches, so subscribing first would boot the workspace twice.
+    this.unsubscribeAuth = this.auth.onChange((next) => {
+      // Fire-and-forget, but not silently: a rejected promise here would be an
+      // unhandled rejection with no way for anybody to see what happened.
+      void this.onAuthUser(next).catch((error: unknown) => this.syncError(error));
+    });
+  }
+
+  /**
+   * Bind `user` to a member and show the workspace it belongs to.
+   *
+   * Also the retry path: `auth-retry` calls it again after an owner has added
+   * the invitation, and a sign-in event routes here through `onAuthUser`.
+   */
+  private async adoptSession(user: AuthUser | null): Promise<void> {
+    // A verified code can arrive twice within a millisecond: the provider
+    // fires SIGNED_IN and the click handler calls `resumeSession()` as well.
+    // One boot per session.
+    if (this.adopting) return;
+    this.adopting = true;
+    try {
+      await this.adoptSessionOnce(user);
+    } finally {
+      this.adopting = false;
+    }
+  }
+
+  private async adoptSessionOnce(user: AuthUser | null): Promise<void> {
+    this.account = user;
+    this.authScreen = null;
+    this.boundMemberId = null;
+
+    if (this.host.kind === 'supabase' && user) {
+      // Bind before loading. `me` has to be the signed-in person: the load path
+      // otherwise falls back to the first member row, which would quietly make
+      // everybody act as whoever was created first.
+      try {
+        const member: Member | null = await this.host.linkAccount(user);
+        this.boundMemberId = member?.id ?? null;
+      } catch (error) {
+        this.sync.stop();
+        this.showAuth(this.authScreenFor({ step: 'error', message: errorMessage(error) }));
+        return;
+      }
+    }
+
     if (this.host.kind === 'supabase') {
       try {
         const { workspace } = await this.host.load();
-        this.domain.adopt(workspace);
+        // Signed in, but no member row names this account while the workspace
+        // already has a team. A workspace nobody has claimed yet predates
+        // sign-in — its rows have names but no email, so the only way in is to
+        // pick one. Once anybody is bound that offer is gone for good, and the
+        // answer becomes "ask an owner to invite you".
+        if (user && !this.boundMemberId && workspace.members.length) {
+          this.sync.stop();
+          if (workspace.members.every((m) => !m.userId)) {
+            this.showAuth(
+              this.authScreenFor({
+                step: 'claim',
+                claimable: workspace.members.map((m) => ({ id: m.id, name: m.name, title: m.title })),
+              }),
+            );
+          } else {
+            this.showAuth(this.authScreenFor({ step: 'not-invited' }));
+          }
+          return;
+        }
+        if (this.boundMemberId) workspace.me = this.boundMemberId;
+        // The server decides who you are once there is a signed-in account, and
+        // `adopt` preserves the *previous* workspace's `me` (the per-browser
+        // "Acting as" choice) by default — which would quietly discard the
+        // binding and leave the board acting as nobody. Without an account that
+        // choice is still the only identity there is, so it is kept.
+        this.domain.adopt(workspace, { keepView: !user });
         // `load()` returns a fallback workspace rather than throwing when the
         // tables are absent, so the setup gap is reported from here. The
         // controller owns the flag, which keeps later status updates from
@@ -119,29 +235,107 @@ export class BlackitFlowApp {
       } catch (error) {
         // A failure here means the shared workspace could not be created, so
         // it has to be visible rather than only in the console.
+        if (this.requireLogin && user) {
+          this.sync.stop();
+          this.showAuth(this.authScreenFor({ step: 'error', message: errorMessage(error) }));
+          return;
+        }
         this.syncError(error);
         this.sync.markSetupRequired(
-          `Could not set up the shared workspace: ${
-            error instanceof Error ? error.message : String(error)
-          }`,
+          `Could not set up the shared workspace: ${errorMessage(error)}`,
         );
-      } finally {
-        // Something is always shown, even when the load fails.
-        this.ready = true;
-        this.actions.refresh();
       }
-    } else {
-      this.ready = true;
     }
 
+    // Something is always shown, even when the load fails.
+    this.ready = true;
     this.actions.refresh();
     this.renderSyncStatus();
     // The shell is only held back to avoid a flash of demo content.
     document.documentElement.classList.remove('first-run');
 
-    // Realtime, presence and the reconnect/heartbeat safety nets.
+    // Realtime, presence and the reconnect/heartbeat safety nets. Restarted
+    // rather than started once: a retry can land on a different member row, and
+    // presence is keyed by that member.
+    this.sync.stop();
     this.sync.start(this.domain.me);
     void this.loadActivity();
+  }
+
+  /** Re-run the post-sign-in path. Used by "Check again" and a verified code. */
+  async resumeSession(): Promise<void> {
+    const user = this.requireLogin ? await this.auth.currentUser() : null;
+    if (this.requireLogin && !user) {
+      this.showAuth({ step: 'signin', email: '', message: '', account: null });
+      return;
+    }
+    // The sign-in event can beat the click handler here; if this account's
+    // board is already up there is nothing to rebuild.
+    if (user && this.account?.id === user.id && this.ready) return;
+    await this.adoptSession(user);
+  }
+
+  /**
+   * React to a session change that happened outside the boot path: a sign-out
+   * in another tab, a revoked token, a sign-in from another tab.
+   */
+  private async onAuthUser(user: AuthUser | null): Promise<void> {
+    if (!this.requireLogin) return;
+    // A token refresh re-delivers the same account; nothing to rebuild.
+    if (user && this.account?.id === user.id) return;
+    if (!user && !this.account) return;
+
+    if (!user) {
+      this.sync.stop();
+      this.ready = false;
+      // Drop the account *and* the board behind it. The overlay covers the
+      // page, but the previous account's workspace would still be sitting in
+      // the DOM — names, tasks and all — for anyone who looks.
+      this.account = null;
+      this.domain.adopt(emptyWorkspace(), { keepView: false });
+      this.showAuth({ step: 'signin', email: '', message: 'You have been signed out.', account: null });
+      return;
+    }
+    await this.adoptSession(user);
+  }
+
+  /** Show the sign-in overlay and hand it the whole screen. */
+  private showAuth(state: AuthScreenState): void {
+    this.authScreen = state;
+    // Reveal the document: the pre-hydration guard hides the shell and a
+    // 6-second failsafe would otherwise announce that the app failed to start.
+    document.documentElement.classList.remove('first-run');
+    this.renderWelcome();
+    this.actions.refresh();
+  }
+
+  /** The overlay state, carrying the account once there is one. */
+  private authScreenFor(patch: Partial<AuthScreenState>): AuthScreenState {
+    const base: AuthScreenState = {
+      step: 'signin',
+      email: this.account?.email ?? this.authScreen?.email ?? '',
+      message: '',
+      account: this.account,
+    };
+    return { ...base, ...patch };
+  }
+
+  /** End the session, forget the cached workspace, and start over. */
+  async signOut(): Promise<void> {
+    this.sync.stop();
+    this.unsubscribeAuth?.();
+    this.unsubscribeAuth = null;
+    await this.auth.signOut();
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+      // Per-browser project choice: meaningless to the next person.
+      localStorage.removeItem('blackit_flow_active_project');
+    } catch {
+      /* private mode — the reload below still re-reads the session */
+    }
+    // A reload is the only honest "signed out" state: it re-runs the boot path
+    // rather than leaving half of the previous account's board on screen.
+    if (typeof window.location?.reload === 'function') window.location.reload();
   }
 
   /* ------------------------------ sync glue ----------------------------- */
@@ -271,6 +465,23 @@ export class BlackitFlowApp {
       chat: this.chat,
       replaceDomain: (mode) => self.replaceDomain(mode),
       focus: (selector) => self.focus(selector),
+      auth: this.auth,
+      account: () => self.account,
+      authState: () => self.authScreen,
+      renderAuth: (state) => {
+        if (!state) {
+          self.authScreen = null;
+          self.renderWelcome();
+          return;
+        }
+        self.showAuth(state);
+      },
+      resumeSession: () => self.resumeSession(),
+      claimMember: async (memberId) => {
+        if (!self.account) return null;
+        return await self.host.claimMember(memberId, self.account);
+      },
+      signOut: () => self.signOut(),
     };
   }
 
@@ -278,10 +489,19 @@ export class BlackitFlowApp {
 
   private renderBar(): void {
     const el = document.querySelector(HOOKS.ctrls);
-    if (el) el.innerHTML = renderControls(this.domain);
+    if (el) el.innerHTML = renderControls(this.domain, this.account);
     const menu = document.querySelector(HOOKS.menu);
-    // The popover moves with its button, so the slot is rebuilt wholesale.
-    if (menu && !menu.querySelector('[data-act="wsmenu"]')) menu.innerHTML = renderMenuButton();
+    // The popover moves with its button, so the slot is rebuilt wholesale — but
+    // only when the identity behind it changed (or it is missing). Rebuilding
+    // it on every refresh would close an open menu under the pointer.
+    const menuKey = this.account?.id ?? null;
+    if (
+      menu &&
+      (menuKey !== this.renderedMenuAccount || !menu.querySelector('[data-act="wsmenu"]'))
+    ) {
+      menu.innerHTML = renderMenuButton(this.account);
+      this.renderedMenuAccount = menuKey;
+    }
     const hp = document.querySelector(HOOKS.headProgress);
     if (hp) hp.innerHTML = renderHeadProgress(this.domain, this.scrolled);
   }
@@ -319,6 +539,15 @@ export class BlackitFlowApp {
   private renderWelcome(): void {
     const el = document.querySelector<HTMLElement>(HOOKS.welcome);
     if (!el) return;
+    // The sign-in card lives in the same fixed overlay as the first-run
+    // welcome: exactly one of them can own the screen, and `booting` keeps the
+    // board hidden behind it.
+    if (this.authScreen) {
+      document.body.classList.add('booting');
+      el.classList.add('on');
+      el.innerHTML = renderAuthScreen(this.authScreen);
+      return;
+    }
     const setup = this.domain.workspace.setup;
     // Until `ready`, hold the shell back with the loader rather than guess.
     document.body.classList.toggle('booting', !this.ready || !setup);
@@ -693,5 +922,10 @@ function statusLabelOf(id: string): string {
     TODO: 'Not Taken',
   };
   return labels[id] ?? id;
+}
+
+/** The one place a thrown value becomes a sentence for the sign-in screen. */
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
