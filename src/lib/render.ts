@@ -74,6 +74,24 @@ export function avatar(domain: FlowDomain, id: string | null, big = false): stri
   }" title="${esc(m.name)}">${esc(initials)}</span>`;
 }
 
+/**
+ * The faces of everybody on a task, overlapped.
+ *
+ * A card is a fixed width, so the stack shows the first few and counts the
+ * rest rather than growing without bound — the full list is one click away in
+ * the assign modal.
+ */
+export function avatarStack(domain: FlowDomain, ids: string[], max = 3): string {
+  if (!ids.length) return '';
+  const shown = ids.slice(0, max);
+  return (
+    '<span class="avstack">' +
+    shown.map((id) => avatar(domain, id)).join('') +
+    (ids.length > max ? `<span class="avmore">+${ids.length - max}</span>` : '') +
+    '</span>'
+  );
+}
+
 function statusIcon(status: string): string {
   if (status === 'DONE') return ICON.check;
   if (status === 'PROG') return ICON.play;
@@ -251,8 +269,8 @@ export function popMenu(t: Task): string {
     '</div>' +
     '<div class="sep"></div>' +
     `<button class="mi" data-act="edit" data-id="${esc(t.id)}">Edit task</button>` +
-    `<button class="mi" data-act="reassign" data-id="${esc(t.id)}">Reassign owner</button>` +
-    (t.assigneeId ? `<button class="mi" data-act="unassign" data-id="${esc(t.id)}">Return to open pool</button>` : '') +
+    `<button class="mi" data-act="reassign" data-id="${esc(t.id)}">Assign people</button>` +
+    (t.assigneeIds.length ? `<button class="mi" data-act="unassign" data-id="${esc(t.id)}">Return to open pool</button>` : '') +
     '<div class="sep"></div>' +
     `<button class="mi danger" data-act="delete" data-id="${esc(t.id)}">Delete task</button>` +
     '</div>'
@@ -262,7 +280,10 @@ export function popMenu(t: Task): string {
 export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string {
   const now = Date.now();
   const st = statusOf(t.status);
-  const m = domain.member(t.assigneeId);
+  const assignees = t.assigneeIds
+    .map((id) => domain.member(id))
+    .filter((m): m is NonNullable<ReturnType<FlowDomain['member']>> => Boolean(m));
+  const me = domain.workspace.me;
   const ty = domain.typeName(t.typeId);
   const prio = prioOf(t.priority);
   const doneSubs = t.subs.filter((s) => s.done).length;
@@ -310,8 +331,10 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
         `Waiting on ${waiting.map((d) => esc(d.key)).join(', ')} · optional, not enforced</div>`
       : '') +
     '<div class="meta">' +
-    (m
-      ? `<span class="who">${avatar(domain, t.assigneeId)}${esc(m.name)}${m.agent ? ' <span class="tchip">AI</span>' : ''}</span>` +
+    (assignees.length
+      ? `<span class="who">${avatarStack(domain, t.assigneeIds)}${assignees
+          .map((m) => esc(m.name))
+          .join(', ')}${assignees.some((m) => m.agent) ? ' <span class="tchip">AI</span>' : ''}</span>` +
         (t.claimedAt
           ? `<span class="taken">took it ${relAgo(t.claimedAt)}</span>`
           : '<span class="taken">assigned</span>')
@@ -344,7 +367,13 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
     `<button data-act="sub-add" data-id="${esc(t.id)}">Add</button></div>` +
     '</div>' +
     '<div class="acts">' +
-    (!m ? `<button class="take" data-act="claim" data-id="${esc(t.id)}">Take this task</button>` : '') +
+    (!assignees.length ? `<button class="take" data-act="claim" data-id="${esc(t.id)}">Take this task</button>` : '') +
+    (assignees.length && me && !t.assigneeIds.includes(me)
+      ? `<button class="take" data-act="assign-me" data-id="${esc(t.id)}">Assign me too</button>`
+      : '') +
+    (t.assigneeIds.includes(me ?? '')
+      ? '<span class="mchip" style="color:var(--teal);border-color:rgba(46,230,197,.35)">you are on this</span>'
+      : '') +
     (t.status === 'DONE'
       ? '<span class="mchip" style="color:var(--green);border-color:rgba(53,208,127,.35)">Completed</span>'
       : '') +
@@ -647,17 +676,31 @@ export function editTaskBody(domain: FlowDomain, t: Task): string {
   );
 }
 
+/**
+ * Who is on this task — a checkbox per member, because a task can be shared.
+ *
+ * Ticked means "on the task", with no primary owner and no watcher tier: two
+ * people sharing work is the normal case, not a special one.
+ */
 export function reassignBody(domain: FlowDomain, t: Task): string {
+  const me = domain.workspace.me;
+  const rows = domain.workspace.members
+    .map((m) => {
+      const on = t.assigneeIds.includes(m.id);
+      return (
+        `<label class="assignrow${on ? ' on' : ''}">` +
+        `<input type="checkbox" name="member:${esc(m.id)}" value="${esc(m.id)}"${on ? ' checked' : ''} />` +
+        avatar(domain, m.id) +
+        `<span class="assignname"><div>${esc(m.name)}${
+          m.id === me ? ' <span class="you">you</span>' : ''
+        }</div><div>${esc(m.title || m.role)}</div></span>` +
+        '</label>'
+      );
+    })
+    .join('');
   return (
-    '<div class="f"><label>Owner</label><select name="owner"><option value="">Not taken · open pool</option>' +
-    domain.workspace.members
-      .map(
-        (m) =>
-          `<option value="${esc(m.id)}" ${m.id === t.assigneeId ? 'selected' : ''}>${esc(m.name)} · ${esc(m.title)}</option>`,
-      )
-      .join('') +
-    '</select></div>' +
-    '<div class="hint" style="margin:0">Assigning sets the owner and the take time. Status changes separately, so order is never forced.</div>'
+    `<div class="assignlist">${rows || '<div class="subempty">Nobody to assign yet.</div>'}</div>` +
+    '<div class="hint" style="margin:12px 0 0">Everyone ticked is equally on the task — nobody is demoted to a watcher. Status changes separately, so order is never forced.</div>'
   );
 }
 

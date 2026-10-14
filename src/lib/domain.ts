@@ -260,7 +260,7 @@ export function initialWorkspace(now: number = Date.now(), newId?: (prefix: stri
   demo.tasks.forEach((t) => {
     remap(t.id);
     remap(t.projectId);
-    remap(t.assigneeId);
+    t.assigneeIds.forEach((id) => remap(id));
     remap(t.claimedBy);
     remap(t.createdBy);
     t.subs.forEach((s) => remap(s.id));
@@ -280,7 +280,7 @@ export function initialWorkspace(now: number = Date.now(), newId?: (prefix: stri
     ...t,
     id: remap(t.id)!,
     projectId: remap(t.projectId)!,
-    assigneeId: remap(t.assigneeId),
+    assigneeIds: t.assigneeIds.map((id) => remap(id)!),
     claimedBy: remap(t.claimedBy),
     createdBy: remap(t.createdBy),
     position: i,
@@ -411,7 +411,8 @@ export function seed(now: number = Date.now() - 86_400_000): Workspace {
       typeId: r[3],
       stage: r[4],
       status: r[5],
-      assigneeId: r[6],
+      // The demo seed names one owner per task; the model holds a list.
+      assigneeIds: r[6] ? [r[6]] : [],
       priority: r[7],
       estimate: r[8],
       dueAt: r[9] === null ? null : now + r[9] * 86_400_000,
@@ -454,15 +455,21 @@ export function normalise(raw: unknown): Workspace | null {
   if (d.mode === undefined) ws.mode = d.projects && d.projects.length ? 'demo' : 'fresh';
   if (d.setup === undefined) ws.setup = true;
   if (!ws.types || !ws.types.length) ws.types = defaultTypes();
-  ws.tasks = ws.tasks.map((t) => ({
-    ...t,
-    dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn : [],
-    subs: (Array.isArray(t.subs) ? t.subs : []).map((s) => ({
-      ...s,
-      id: s.id ?? uid('s'),
-      done: Boolean(s.done),
-    })),
-  }));
+  ws.tasks = ws.tasks.map((t) => {
+    // Older payloads carry a single `assigneeId` (tasks gained a full assignee
+    // list later), and a hand-edited localStorage blob may carry neither.
+    const legacy = (t as { assigneeId?: string | null }).assigneeId;
+    return {
+      ...t,
+      dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn : [],
+      assigneeIds: Array.isArray(t.assigneeIds) ? t.assigneeIds : legacy ? [legacy] : [],
+      subs: (Array.isArray(t.subs) ? t.subs : []).map((s) => ({
+        ...s,
+        id: s.id ?? uid('s'),
+        done: Boolean(s.done),
+      })),
+    };
+  });
   return ws;
 }
 
@@ -650,6 +657,14 @@ export class FlowDomain {
     return this.workspace.tasks.find((t) => t.id === id) ?? null;
   }
 
+  /**
+   * Everyone on a task, as prose. The assistant and toasts read better with
+   * names than with ids, and the join is the same one the card renders.
+   */
+  assigneeNames(t: Task): string {
+    return t.assigneeIds.map((id) => this.member(id)?.name ?? 'someone').join(', ');
+  }
+
   /** The members of the rail node's outgoing connector colour. */
   colorFor(id: string | null): string {
     const i = this.workspace.members.findIndex((m) => m.id === id);
@@ -660,8 +675,8 @@ export class FlowDomain {
     const { fMember, fStatus } = this.workspace;
     return this.projectTasks().filter((t) => {
       if (fMember === 'none') {
-        if (t.assigneeId) return false;
-      } else if (fMember !== 'all' && t.assigneeId !== fMember) {
+        if (t.assigneeIds.length) return false;
+      } else if (fMember !== 'all' && !t.assigneeIds.includes(fMember)) {
         return false;
       }
       if (fStatus !== 'all' && t.status !== fStatus) return false;
@@ -704,38 +719,159 @@ export class FlowDomain {
     const t = this.findTask(id);
     if (!t) return { ok: false, message: 'Task not found', task: null };
     if (!this.workspace.me) return { ok: false, message: 'Add yourself in Team first', task: t };
-    if (t.assigneeId) {
-      const owner = this.member(t.assigneeId);
-      return { ok: false, message: `Already taken by ${owner ? owner.name : 'someone'}`, task: t };
+    const me = this.member(this.workspace.me);
+    if (t.assigneeIds.includes(this.workspace.me)) {
+      return { ok: false, message: `Already on ${t.key}`, task: t };
     }
-    t.assigneeId = this.workspace.me;
-    t.claimedBy = this.workspace.me;
-    t.claimedAt = Date.now();
+    // The pool is only empty when nobody is on it; taking a task somebody else
+    // already holds is a normal joint assignment, not a claim.
+    const fromPool = t.assigneeIds.length === 0;
+    t.assigneeIds.push(this.workspace.me);
+    if (fromPool) {
+      t.claimedBy = this.workspace.me;
+      t.claimedAt = Date.now();
+    }
     if (t.status === 'TODO') t.status = 'PROG';
     this.save();
-    const taker = this.member(this.workspace.me);
-    this.emit({ action: 'task.claimed', taskKey: t.key, summary: taker?.name ?? 'Someone' });
-    return { ok: true, message: `You took ${t.key} · moved to In Progress`, task: t };
+    this.emit({
+      action: 'task.claimed',
+      taskKey: t.key,
+      summary: fromPool ? (me?.name ?? 'Someone') : `${me?.name ?? 'Someone'} joined`,
+    });
+    return {
+      ok: true,
+      message: fromPool
+        ? `You took ${t.key} · moved to In Progress`
+        : `You are on ${t.key} too`,
+      task: t,
+    };
   }
 
+  /**
+   * Add one person to a task, without disturbing anybody already on it.
+   *
+   * Status follows the same rule as claiming: joining a task nobody has
+   * started moves it to In Progress, because somebody is now working on it.
+   */
+  addAssignee(id: string, memberId: string): { message: string; task: Task | null } {
+    const t = this.findTask(id);
+    if (!t) return { message: 'Task not found', task: null };
+    const m = this.member(memberId);
+    if (!m) return { message: 'Member not found', task: t };
+    if (t.assigneeIds.includes(memberId)) {
+      return { message: `${m.name} is already on ${t.key}`, task: t };
+    }
+    const fromPool = t.assigneeIds.length === 0;
+    t.assigneeIds.push(memberId);
+    if (fromPool) {
+      t.claimedBy = memberId;
+      t.claimedAt = Date.now();
+    }
+    if (t.status === 'TODO') t.status = 'PROG';
+    this.save();
+    this.emit({
+      action: 'task.assigned',
+      taskKey: t.key,
+      summary: fromPool ? m.name : `${m.name} joined`,
+    });
+    return { message: `${t.key} assigned to ${m.name}`, task: t };
+  }
+
+  /** Remove one person. The task drops back to the open pool once empty. */
+  removeAssignee(id: string, memberId: string): { message: string; task: Task | null } {
+    const t = this.findTask(id);
+    if (!t) return { message: 'Task not found', task: null };
+    if (!t.assigneeIds.includes(memberId)) return { message: 'Not on this task', task: t };
+    const m = this.member(memberId);
+    t.assigneeIds = t.assigneeIds.filter((x) => x !== memberId);
+    // The "took it" record only survives while the person who took it is still
+    // on the task; otherwise the card would credit somebody who has left.
+    if (t.claimedBy === memberId) {
+      const next = t.assigneeIds[0] ?? null;
+      t.claimedBy = next;
+      t.claimedAt = next ? t.claimedAt : null;
+    }
+    this.save();
+    return {
+      message: t.assigneeIds.length
+        ? `${m?.name ?? 'Member'} removed from ${t.key}`
+        : `${t.key} is back in the open pool`,
+      task: t,
+    };
+  }
+
+  /**
+   * Replace the whole assignee list.
+   *
+   * `reassign` is the blunt instrument the ⋯ menu and the assistant use when
+   * somebody says "put this on X": it means *X owns this now*, not "add X".
+   * Use `addAssignee` for the additive case — they are different intentions and
+   * conflating them loses work silently.
+   */
   reassign(id: string, memberId: string | null): { message: string; task: Task | null } {
     const t = this.findTask(id);
     if (!t) return { message: 'Task not found', task: null };
     if (!memberId) {
-      t.assigneeId = null;
+      t.assigneeIds = [];
       t.claimedBy = null;
       t.claimedAt = null;
       this.save();
       return { message: `${t.key} is back in the open pool`, task: t };
     }
-    t.assigneeId = memberId;
-    t.claimedBy = memberId;
-    t.claimedAt = Date.now();
+    const m = this.member(memberId);
+    if (!m) return { message: 'Member not found', task: t };
+    const fromPool = t.assigneeIds.length === 0;
+    t.assigneeIds = [memberId];
+    if (fromPool) {
+      t.claimedBy = memberId;
+      t.claimedAt = Date.now();
+    } else if (t.claimedBy === null) {
+      t.claimedBy = memberId;
+    }
     if (t.status === 'TODO') t.status = 'PROG';
     this.save();
-    const m = this.member(memberId);
-    this.emit({ action: 'task.assigned', taskKey: t.key, summary: m ? m.name : 'member' });
-    return { message: `${t.key} assigned to ${m ? m.name : 'member'}`, task: t };
+    this.emit({ action: 'task.assigned', taskKey: t.key, summary: m.name });
+    return { message: `${t.key} assigned to ${m.name}`, task: t };
+  }
+
+  /** Set the assignee list wholesale, from the multi-select modal. */
+  setAssignees(id: string, memberIds: string[]): { message: string; task: Task | null } {
+    const t = this.findTask(id);
+    if (!t) return { message: 'Task not found', task: null };
+    const clean = [...new Set(memberIds)].filter((mid) => Boolean(this.member(mid)));
+    const added = clean.filter((mid) => !t.assigneeIds.includes(mid));
+    const removed = t.assigneeIds.filter((mid) => !clean.includes(mid));
+    if (!added.length && !removed.length) return { message: 'No change', task: t };
+
+    if (!clean.length) {
+      t.assigneeIds = [];
+      t.claimedBy = null;
+      t.claimedAt = null;
+      this.save();
+      this.emit({ action: 'task.assigned', taskKey: t.key, summary: 'nobody' });
+      return { message: `${t.key} is back in the open pool`, task: t };
+    }
+
+    const fromPool = t.assigneeIds.length === 0;
+    t.assigneeIds = clean;
+    if (fromPool || !t.claimedBy || !clean.includes(t.claimedBy)) {
+      t.claimedBy = clean[0]!;
+      t.claimedAt = t.claimedAt ?? Date.now();
+    }
+    if (t.status === 'TODO') t.status = 'PROG';
+    this.save();
+    const names = added.map((mid) => this.member(mid)?.name ?? 'member').join(', ');
+    const left = removed.map((mid) => this.member(mid)?.name ?? 'member').join(', ');
+    this.emit({
+      action: 'task.assigned',
+      taskKey: t.key,
+      summary: [names && `+${names}`, left && `−${left}`].filter(Boolean).join(' ') || 'nobody',
+    });
+    const parts = [
+      names ? `${names} added` : '',
+      left ? `${left} removed` : '',
+    ].filter(Boolean);
+    return { message: `${t.key} · ${parts.join(', ')}`, task: t };
   }
 
   deleteTask(id: string): Task | null {
@@ -833,6 +969,7 @@ export class FlowDomain {
   async createTask(input: {
     title: string;
     typeId: string;
+    /** The composer offers one owner; more can be added from the card. */
     assigneeId: string | null;
     due: string | null;
     priority: PriorityId;
@@ -851,7 +988,7 @@ export class FlowDomain {
       typeId: input.typeId,
       stage: 'New',
       status: input.assigneeId ? 'PROG' : 'TODO',
-      assigneeId: input.assigneeId,
+      assigneeIds: input.assigneeId ? [input.assigneeId] : [],
       priority: input.priority,
       estimate: 3,
       dueAt: input.due ? new Date(`${input.due}T12:00:00`).getTime() : null,
@@ -888,7 +1025,7 @@ export class FlowDomain {
       typeId: 'tt3',
       stage: 'New',
       status: p.owner ? 'PROG' : 'TODO',
-      assigneeId: p.owner ? p.owner.id : null,
+      assigneeIds: p.owner ? [p.owner.id] : [],
       priority: p.prio,
       estimate: 3,
       dueAt: p.due ? new Date(`${p.due}T12:00:00`).getTime() : null,
@@ -967,12 +1104,14 @@ export class FlowDomain {
     if (this.workspace.members.length <= 1) {
       return { ok: false, message: 'Keep at least one member', owned: 0 };
     }
-    const owned = this.workspace.tasks.filter((t) => t.assigneeId === id).length;
+    const owned = this.workspace.tasks.filter((t) => t.assigneeIds.includes(id)).length;
     this.workspace.tasks.forEach((t) => {
-      if (t.assigneeId === id) {
-        t.assigneeId = null;
-        t.claimedBy = null;
-        t.claimedAt = null;
+      if (t.assigneeIds.includes(id)) {
+        t.assigneeIds = t.assigneeIds.filter((x) => x !== id);
+      }
+      if (t.claimedBy === id) {
+        t.claimedBy = t.assigneeIds[0] ?? null;
+        t.claimedAt = t.claimedBy ? t.claimedAt : null;
       }
     });
     this.workspace.members = this.workspace.members.filter((x) => x.id !== id);
@@ -1131,7 +1270,7 @@ export class FlowDomain {
       this.setStatus(hit.id, 'BLOCK');
       return { html: `<b>${esc(hit.key)}</b> marked as Blocked.`, pending: null, mutated: true };
     }
-    if (hit && /\b(take|claim)\b/.test(s) && !hit.assigneeId) {
+    if (hit && /\b(take|claim|join)\b/.test(s) && !hit.assigneeIds.includes(this.workspace.me ?? '')) {
       this.claim(hit.id);
       return { html: `You took <b>${esc(hit.key)}</b>.`, pending: null, mutated: true };
     }
@@ -1147,7 +1286,7 @@ export class FlowDomain {
               .map(
                 (t) =>
                   `<span class="k">${esc(t.key)}</span> ${esc(t.title)}${
-                    t.assigneeId ? ` · ${esc(this.member(t.assigneeId)?.name ?? '')}` : ' · no owner'
+                    t.assigneeIds.length ? ` · ${esc(this.assigneeNames(t))}` : ' · no owner'
                   }`,
               )
               .join('<br>')}`
@@ -1172,7 +1311,7 @@ export class FlowDomain {
               (t) =>
                 `<span class="k">${esc(t.key)}</span> ${esc(t.title)} · ${
                   (t.dueAt ?? 0) < Date.now() ? '<b>overdue</b>' : shortDate(t.dueAt ?? 0)
-                } · ${t.assigneeId ? esc(this.member(t.assigneeId)?.name ?? '') : 'not taken'}`,
+                } · ${t.assigneeIds.length ? esc(this.assigneeNames(t)) : 'not taken'}`,
             )
             .join('<br>'),
         pending: null,
@@ -1183,7 +1322,7 @@ export class FlowDomain {
       const rows = this.workspace.members
         .map((m) => ({
           m,
-          n: this.workspace.tasks.filter((t) => t.assigneeId === m.id && t.status !== 'DONE').length,
+          n: this.workspace.tasks.filter((t) => t.assigneeIds.includes(m.id) && t.status !== 'DONE').length,
         }))
         .sort((a, b) => b.n - a.n)
         .slice(0, 4);
@@ -1194,7 +1333,7 @@ export class FlowDomain {
       };
     }
     if (/not taken|unassigned|pool|no owner|available|claim/.test(s)) {
-      const p = this.workspace.tasks.filter((t) => !t.assigneeId && t.status !== 'DONE');
+      const p = this.workspace.tasks.filter((t) => !t.assigneeIds.length && t.status !== 'DONE');
       return {
         html: p.length
           ? `${p.length} tasks have no owner:<br>${p

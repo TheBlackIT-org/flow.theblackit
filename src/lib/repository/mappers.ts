@@ -68,7 +68,11 @@ export function taskFromRow(row: Row): Task {
     typeId: str(row.type_id, 'tt3'),
     stage: str(row.stage, 'New'),
     status: str(row.status, 'TODO') as StatusId,
-    assigneeId: strOrNull(row.assignee_id),
+    // Assignees live in their own table, so they are attached by `load()`
+    // rather than read from a column here. The legacy `tasks.assignee_id`
+    // column survives the transition but is deliberately ignored: two sources
+    // of truth for the same fact would drift the first time one was written.
+    assigneeIds: [],
     priority: str(row.priority, 'normal') as PriorityId,
     estimate: Number(row.estimate ?? 3),
     dueAt: ms(row.due_at),
@@ -82,6 +86,23 @@ export function taskFromRow(row: Row): Task {
     subs: [],
     open: false,
   };
+}
+
+/** One row of the task ⇄ member join table. */
+export interface TaskAssigneeRow {
+  taskId: string;
+  memberId: string;
+}
+
+export function taskAssigneeFromRow(row: Row): TaskAssigneeRow {
+  return { taskId: str(row.task_id), memberId: str(row.member_id) };
+}
+
+export function taskAssigneeToRow(a: TaskAssigneeRow): Row {
+  // `assigned_at` and `assigned_by` are filled in by the database: the client
+  // does not track when or by whom each person was added, and a trigger can
+  // read the actor from the session rather than trusting the payload.
+  return { task_id: a.taskId, member_id: a.memberId };
 }
 
 export function subtaskFromRow(row: Row): Subtask {
@@ -147,7 +168,8 @@ export function taskToRow(t: Task, position: number): Row {
     type_id: t.typeId,
     priority: t.priority,
     estimate: t.estimate,
-    assignee_id: t.assigneeId,
+    // No `assignee_id`: the join table owns assignment now. Omitting the column
+    // leaves the legacy value untouched instead of clobbering it on every save.
     due_at: iso(t.dueAt),
     depends_on: t.dependsOn,
     created_by: t.createdBy,

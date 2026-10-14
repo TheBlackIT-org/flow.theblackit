@@ -74,7 +74,7 @@ function toUuidSpace(ws: ReturnType<typeof liveWorkspace>) {
   ws.projects.forEach((p) => remap(p.id));
   ws.tasks.forEach((t) => {
     remap(t.id);
-    remap(t.assigneeId);
+    t.assigneeIds.forEach((id) => remap(id));
     remap(t.claimedBy);
     remap(t.createdBy);
   });
@@ -85,7 +85,7 @@ function toUuidSpace(ws: ReturnType<typeof liveWorkspace>) {
     ...t,
     id: remap(t.id)!,
     projectId: remap(t.projectId)!,
-    assigneeId: remap(t.assigneeId),
+    assigneeIds: t.assigneeIds.map((id) => remap(id)!),
     claimedBy: remap(t.claimedBy),
     createdBy: remap(t.createdBy),
   }));
@@ -140,6 +140,15 @@ async function primed(prepared?: ReturnType<typeof liveWorkspace>) {
         text: sub.t,
         done: sub.done,
         position: i,
+      })),
+    ),
+    // So does assignment. `assigned_at` orders the list, so it is seeded in
+    // array order to keep a task's first assignee first.
+    task_assignees: live.tasks.flatMap((t) =>
+      t.assigneeIds.map((memberId, i) => ({
+        task_id: t.id,
+        member_id: memberId,
+        assigned_at: new Date(NOW + i).toISOString(),
       })),
     ),
   });
@@ -378,7 +387,9 @@ describe('subscribe', () => {
     repository.subscribe({ onChange, onState: vi.fn(), onPresence: vi.fn() }, memberFromRow({ id: 'm1', name: 'Arjun' }));
 
     const tables = fake.channels[0]!.handlers.map((h) => h.table).sort();
-    expect(tables).toEqual(['activity', 'members', 'projects', 'subtasks', 'tasks']);
+    // Assignment has its own table, so a change to who is on a task arrives as
+    // a `task_assignees` event rather than riding along with the task row.
+    expect(tables).toEqual(['activity', 'members', 'projects', 'subtasks', 'task_assignees', 'tasks']);
   });
 
   it('forwards a row event to the app', async () => {
@@ -784,5 +795,146 @@ describe('a new project carries a task counter', () => {
     expect(projectToRow(p, 'ws')).not.toHaveProperty('task_counter');
     expect(projectToRow(p, 'ws', true)).toHaveProperty('task_counter', 0);
     expect(projectToRow({ ...p, taskCounter: 7 }, 'ws')).toHaveProperty('task_counter', 7);
+  });
+});
+
+/**
+ * Assignment storage.
+ *
+ * A task's people are rows in `task_assignees`, not a column on the task. The
+ * two halves of that — reading a task's people back, and writing only the
+ * memberships that actually changed — are invisible in the UI and impossible to
+ * eyeball, so they are pinned here.
+ */
+describe('assignment is a join table', () => {
+  it('reads a task’s people back, oldest first', async () => {
+    const ws = liveWorkspace();
+    const { ws: live } = toUuidSpace(ws);
+    const task = live.tasks.find((t) => t.assigneeIds.length)!;
+    const first = task.assigneeIds[0]!;
+
+    const { loaded } = await primed(ws);
+    const read = loaded.tasks.find((t) => t.id === task.id)!;
+
+    expect(read.assigneeIds).toEqual(task.assigneeIds);
+    // Order is by `assigned_at`, so the first person put on a task stays first
+    // — which is what owns the card's colour.
+    expect(read.assigneeIds[0]).toBe(first);
+  });
+
+  it('orders assignees by assigned_at, not by the order rows come back', async () => {
+    const A = uuidFor('member-a');
+    const B = uuidFor('member-b');
+    const T = uuidFor('task-a');
+    const fake = fakeSupabase({
+      workspaces: [{ id: WS }],
+      members: [
+        { id: A, workspace_id: WS, name: 'First', role: 'member', title: '', is_agent: false },
+        { id: B, workspace_id: WS, name: 'Second', role: 'member', title: '', is_agent: false },
+      ],
+      projects: [{ id: uuidFor('proj-a'), workspace_id: WS, key: 'AA', name: 'P', product: '' }],
+      tasks: [
+        {
+          id: T,
+          project_id: uuidFor('proj-a'),
+          key: 'AA-1',
+          position: 0,
+          title: 'Shared',
+          status: 'TODO',
+          created_at: new Date(NOW).toISOString(),
+        },
+      ],
+      // Deliberately returned newest-first, the way an unordered select can.
+      task_assignees: [
+        { task_id: T, member_id: B, assigned_at: new Date(NOW + 5000).toISOString() },
+        { task_id: T, member_id: A, assigned_at: new Date(NOW).toISOString() },
+      ],
+    });
+
+    const loaded = (await repo(fake).load())!;
+    expect(loaded.tasks[0]!.assigneeIds).toEqual([A, B]);
+  });
+
+  it('inserts one membership row per newly added person, tagged for echo suppression', async () => {
+    const { fake, repository, loaded, ws } = await primed();
+    const task = loaded.tasks[0]!;
+    const joiner = ws.members.find((m) => !task.assigneeIds.includes(m.id))!;
+    task.assigneeIds = [...task.assigneeIds, joiner.id];
+
+    await repository.flush(loaded, 'mut-add');
+
+    // `writesTo` returns one entry per call; the payload is the batch.
+    const written = (writesTo(fake, 'task_assignees', 'upsert') as Array<
+      Array<Record<string, unknown>>
+    >).flat();
+    expect(written).toEqual([{ task_id: task.id, member_id: joiner.id, mutation_id: 'mut-add' }]);
+    // `assigned_at` and `assigned_by` are the database's job, not the client's.
+    expect(written[0]).not.toHaveProperty('assigned_at');
+    expect(written[0]).not.toHaveProperty('assigned_by');
+  });
+
+  it('deletes exactly the membership that went away, scoped to its task', async () => {
+    const { fake, repository, loaded } = await primed();
+    const task = loaded.tasks.find((t) => t.assigneeIds.length === 1)!;
+    const leaver = task.assigneeIds[0]!;
+    task.assigneeIds = [];
+
+    await repository.flush(loaded, 'mut-drop');
+
+    const removed = fake.calls.filter((c) => c.table === 'task_assignees' && c.method === 'delete');
+    expect(removed).toHaveLength(1);
+    expect(removed[0]!.filters).toEqual([
+      { op: 'eq', column: 'task_id', value: task.id },
+      { op: 'in', column: 'member_id', value: [leaver] },
+    ]);
+  });
+
+  it('moves a person between tasks without removing them from both', async () => {
+    // A single `in` over both columns would be a cross product, and would take
+    // the mover off the task they were just added to.
+    const { fake, repository, loaded } = await primed();
+    const withPeople = loaded.tasks.filter((t) => t.assigneeIds.length);
+    const from = withPeople[0]!;
+    const to = withPeople[1]!;
+    const mover = from.assigneeIds[0]!;
+
+    from.assigneeIds = from.assigneeIds.slice(1);
+    to.assigneeIds = [...to.assigneeIds, mover];
+
+    await repository.flush(loaded, 'mut-move');
+
+    const removed = fake.calls.filter((c) => c.table === 'task_assignees' && c.method === 'delete');
+    expect(removed).toHaveLength(1);
+    expect(removed[0]!.filters.some((f) => f.column === 'task_id' && f.value === to.id)).toBe(false);
+
+    const written = (writesTo(fake, 'task_assignees', 'upsert') as Array<
+      Array<Record<string, unknown>>
+    >).flat();
+    expect(written).toEqual([{ task_id: to.id, member_id: mover, mutation_id: 'mut-move' }]);
+  });
+
+  it('never writes the legacy assignee_id, so the two cannot drift', async () => {
+    // The column still exists so a stale tab keeps working. The new client must
+    // not write it, or the old and new sources of truth would fight.
+    const { fake, repository, loaded } = await primed();
+    const task = loaded.tasks[0]!;
+    task.title = 'Renamed';
+    task.assigneeIds = [...task.assigneeIds, loaded.members[4]!.id];
+
+    await repository.flush(loaded, 'mut-legacy');
+
+    const rows = writesTo(fake, 'tasks', 'upsert') as Array<Record<string, unknown>>;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row, 'a task row must not carry assignee_id').not.toHaveProperty('assignee_id');
+    }
+  });
+
+  it('does not touch the database when assignment is unchanged', async () => {
+    const { fake, repository, loaded } = await primed();
+    await repository.flush(loaded, 'mut-noop');
+    expect(writesTo(fake, 'task_assignees')).toEqual([]);
+    const deletes = fake.calls.filter((c) => c.table === 'task_assignees' && c.method === 'delete');
+    expect(deletes).toEqual([]);
   });
 });

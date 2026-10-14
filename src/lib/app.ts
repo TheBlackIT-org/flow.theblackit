@@ -564,9 +564,20 @@ export class BlackitFlowApp {
 
   private formData(): Record<string, string> {
     const out: Record<string, string> = {};
-    document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('#modal [name]').forEach((el) => {
-      out[el.name] = el.value;
-    });
+    document
+      .querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('#modal [name]')
+      .forEach((el) => {
+        // An unticked checkbox is not part of the answer. Without this the
+        // multi-select assign modal would read every member as selected, since
+        // a checkbox keeps its `value` whether or not it is checked.
+        //
+        // Checked structurally, not with `instanceof`: that constructor is
+        // absent outside a real browser and a ReferenceError here would break
+        // every modal in the app.
+        const field = el as HTMLInputElement;
+        if (field.type === 'checkbox' && !field.checked) return;
+        out[el.name] = el.value;
+      });
     return out;
   }
 

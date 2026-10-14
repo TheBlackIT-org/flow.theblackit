@@ -96,14 +96,24 @@ $$;
 -- Dropping the policies is not enough on its own — the role still holds table
 -- grants from `0001_init.sql`. Revoke those too, so a mistake in a policy
 -- cannot silently re-open the tables.
+--
+-- Guarded on `to_regclass` because this file is the last one applied and
+-- `0005_task_assignees.sql` may not have been run yet; a missing table must not
+-- abort the script half-way through the cutover.
 
 do $$
 declare
   t text;
 begin
   for t in
-    select unnest(array['workspaces', 'members', 'projects', 'tasks', 'subtasks', 'activity'])
+    select unnest(array[
+      'workspaces', 'members', 'projects', 'tasks', 'subtasks', 'activity',
+      'task_assignees'
+    ])
   loop
+    if to_regclass('public.' || t) is null then
+      continue;
+    end if;
     execute format('drop policy if exists %I on %I', t || '_anon_all', t);
     execute format('revoke all on %I from anon', t);
   end loop;
@@ -263,6 +273,39 @@ drop policy if exists activity_insert on activity;
 create policy activity_insert on activity
   for insert to authenticated
   with check (is_workspace_member(workspace_id));
+
+-- --------------------------------------------------- assignment policies
+--
+-- Guarded: `0005_task_assignees.sql` is additive and may not have been applied
+-- when this cutover runs, and assignment is a later feature than sign-in.
+
+do $$
+begin
+  if to_regclass('public.task_assignees') is null then
+    return;
+  end if;
+
+  execute 'drop policy if exists task_assignees_select on task_assignees';
+  execute 'create policy task_assignees_select on task_assignees
+             for select to authenticated using (is_task_member(task_id))';
+
+  execute 'drop policy if exists task_assignees_insert on task_assignees';
+  execute 'create policy task_assignees_insert on task_assignees
+             for insert to authenticated with check (is_task_member(task_id))';
+
+  -- Updating a membership row is meaningless (it is only ever added or
+  -- removed), but the client's upsert path can land here, so allow it within
+  -- the same task rather than making an idempotent re-assign fail.
+  execute 'drop policy if exists task_assignees_update on task_assignees';
+  execute 'create policy task_assignees_update on task_assignees
+             for update to authenticated using (is_task_member(task_id))
+             with check (is_task_member(task_id))';
+
+  execute 'drop policy if exists task_assignees_delete on task_assignees';
+  execute 'create policy task_assignees_delete on task_assignees
+             for delete to authenticated using (is_task_member(task_id))';
+end;
+$$;
 
 -- ---------------------------------------------------------------- grants
 

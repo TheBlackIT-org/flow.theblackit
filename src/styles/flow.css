@@ -234,6 +234,16 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .claimname { font-size: 14px; font-weight: 600; }
 .claimtitle { font-size: 11.5px; color: var(--muted-2); }
 .mrow .mname .mchip { margin-left: 6px; }
+
+/* ---------- the assign-a-task multi-select ---------- */
+.assignlist { display: grid; gap: 7px; }
+.assignrow { display: flex; align-items: center; gap: 11px; border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.03); border-radius: 13px; padding: 10px 13px; cursor: pointer; transition: border-color 0.2s ease, background 0.2s ease; }
+.assignrow:hover { border-color: rgba(46, 230, 197, 0.35); }
+.assignrow.on { border-color: rgba(46, 230, 197, 0.5); background: rgba(46, 230, 197, 0.07); }
+.assignrow input { flex: none; width: 15px; height: 15px; accent-color: var(--teal); }
+.assignrow .av { flex: none; }
+.assignname { flex: 1; min-width: 0; font-size: 12.5px; }
+.assignname div:last-child { font-size: 11px; color: var(--muted-2); }
 .wzdots { display: flex; gap: 6px; margin-bottom: 16px; }
 .wzdots i { width: 24px; height: 4px; border-radius: 20px; background: rgba(255, 255, 255, 0.13); }
 .wzdots i.on { background: var(--teal); }
@@ -450,6 +460,11 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .desc { font-size: 13px; color: #9aa4b4; line-height: 1.5; margin-top: 8px; }
 .meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 .who { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+/* Overlapped faces of everybody on a task, plus the count of any hidden. */
+.avstack { display: inline-flex; align-items: center; }
+.avstack .av { margin-left: -7px; box-shadow: 0 0 0 2px var(--bg); }
+.avstack .av:first-child { margin-left: 0; }
+.avmore { margin-left: -7px; min-width: 22px; height: 22px; padding: 0 5px; border-radius: 20px; display: grid; place-items: center; font-size: 10px; font-weight: 600; color: var(--muted); background: #1b1f28; box-shadow: 0 0 0 2px var(--bg); }
 .av { width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-size: 10px; font-weight: 600; color: #07201c; flex: none; }
 .av.agent { color: #fff; }
 .taken { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 5px; border-left: 1px solid var(--stroke); padding-left: 10px; }

@@ -182,7 +182,7 @@ describe('filters', () => {
     change($('[data-act="fmember"]'), 'm2');
     const rows = $$('.row[data-task]').map((r) => r.dataset.task);
     expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((id) => app.domain.findTask(id!)?.assigneeId === 'm2')).toBe(true);
+    expect(rows.every((id) => app.domain.findTask(id!)?.assigneeIds.includes('m2'))).toBe(true);
   });
 
   it('shows the empty state when filters match nothing, then clears them', async () => {
@@ -218,7 +218,7 @@ describe('composer', () => {
     ($('#newTitle') as HTMLInputElement).value = 'Assigned by default';
     await click($('[data-act="create"]'));
     const created = app.domain.workspace.tasks.find((t) => t.title === 'Assigned by default')!;
-    expect(created.assigneeId).toBe('m1');
+    expect(created.assigneeIds).toEqual(['m1']);
     expect(created.status).toBe('PROG');
     expect($(`.row[data-task="${created.id}"] .take`)).toBeNull();
   });
@@ -355,14 +355,42 @@ describe('modals', () => {
   it('reassigns the owner and returns work to the open pool', async () => {
     await click($('.row[data-task="t1"] .kebab'));
     await click($('.row[data-task="t1"] [data-act="reassign"]'));
-    ($('#modal [name="owner"]') as HTMLSelectElement).value = 'm5';
+    // The modal lists every member as a checkbox, so two people can be ticked.
+    expect($$('#modal input[type="checkbox"][name^="member:"]').length).toBe(
+      app.domain.workspace.members.length,
+    );
+    ($('#modal [name="member:m3"]') as El).checked = false;
+    ($('#modal [name="member:m5"]') as El).checked = true;
     await click($('#modal [data-act="submit-modal"]'));
-    expect(app.domain.findTask('t1')?.assigneeId).toBe('m5');
+    expect(app.domain.findTask('t1')!.assigneeIds).toEqual(['m5']);
 
     await click($('.row[data-task="t1"] .kebab'));
     await click($('.row[data-task="t1"] [data-act="unassign"]'));
-    expect(app.domain.findTask('t1')?.assigneeId).toBeNull();
+    expect(app.domain.findTask('t1')!.assigneeIds).toEqual([]);
     expect($('.row[data-task="t1"] .take')).not.toBeNull();
+  });
+
+  it('puts two people on one task and lets a third join from the card', async () => {
+    await click($('.row[data-task="t1"] .kebab'));
+    await click($('.row[data-task="t1"] [data-act="reassign"]'));
+    ($('#modal [name="member:m5"]') as El).checked = true;
+    await click($('#modal [data-act="submit-modal"]'));
+    expect(app.domain.findTask('t1')!.assigneeIds).toEqual(['m3', 'm5']);
+    // Both faces are on the card, and the "+n" count is absent for two.
+    expect($$('.row[data-task="t1"] .who .av').length).toBe(2);
+    expect($('.row[data-task="t1"] .who').textContent).toContain('Sneha Thomas');
+    expect($('.row[data-task="t1"] .who').textContent).toContain('Meera Suresh');
+
+    // "Assign me too" is the self-service path onto somebody else's task.
+    app.domain.workspace.me = 'm1';
+    await click($('[data-act="cycle"][data-id="t1"]')); // re-render with me = m1
+    const assignMe = $('.row[data-task="t1"] [data-act="assign-me"]');
+    expect(assignMe).not.toBeNull();
+    await click(assignMe);
+    expect(app.domain.findTask('t1')!.assigneeIds).toEqual(['m3', 'm5', 'm1']);
+    // Three is exactly the stack limit, so no overflow chip yet.
+    expect($$('.row[data-task="t1"] .who .av').length).toBe(3);
+    expect($('.row[data-task="t1"] .avmore')).toBeNull();
   });
 
   it('closes on Escape before anything else', async () => {
@@ -395,7 +423,7 @@ describe('team', () => {
     globalThis.confirm = () => true;
     await click($$('#modal [data-act="del-member"]').find((b) => b.dataset.id === 'm3'));
     expect(app.domain.workspace.members.length).toBe(before - 1);
-    expect(app.domain.workspace.tasks.some((t) => t.assigneeId === 'm3')).toBe(false);
+    expect(app.domain.workspace.tasks.some((t) => t.assigneeIds.includes('m3'))).toBe(false);
   });
 
   it('switches the acting member and attributes new work to them', async () => {
@@ -427,7 +455,7 @@ describe('assistant', () => {
 
     await click($('#chat [data-act="chat-add"]'));
     const created = app.domain.workspace.tasks.find((t) => t.title.includes('beta invite'))!;
-    expect(created.assigneeId).toBe('m5');
+    expect(created.assigneeIds).toEqual(['m5']);
     expect($$('.row[data-task]').some((r) => r.dataset.task === created.id)).toBe(true);
   });
 

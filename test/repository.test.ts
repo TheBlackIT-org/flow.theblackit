@@ -189,6 +189,105 @@ describe('applyChange', () => {
     expect(result.changed).toBe(true);
   });
 
+  it('preserves the assignees when a task row arrives', () => {
+    // Assignees live in the join table, so a `tasks` row carries an empty
+    // list. Overwriting from it would silently empty every card the moment a
+    // title was renamed on another machine.
+    const target = ws.tasks.find((t) => t.assigneeIds.length)!;
+    const before = [...target.assigneeIds];
+    const change: RowChange = {
+      table: 'tasks',
+      type: 'UPDATE',
+      row: { ...taskToRow(target, target.position ?? 0), title: 'Renamed elsewhere' },
+    };
+    applyChange(ws, change, ctx);
+    expect(ws.tasks.find((t) => t.id === target.id)!.assigneeIds).toEqual(before);
+  });
+
+  it('adds and removes one person from a task_assignees event', () => {
+    const target = ws.tasks.find((t) => t.assigneeIds.length)!;
+    const other = ws.members.find((m) => !target.assigneeIds.includes(m.id))!;
+
+    const added = applyChange(
+      ws,
+      { table: 'task_assignees', type: 'INSERT', row: { task_id: target.id, member_id: other.id } },
+      ctx,
+    );
+    expect(added.changed).toBe(true);
+    expect(ws.tasks.find((t) => t.id === target.id)!.assigneeIds).toContain(other.id);
+
+    const removed = applyChange(
+      ws,
+      {
+        table: 'task_assignees',
+        type: 'DELETE',
+        row: { task_id: target.id, member_id: other.id },
+        old: { task_id: target.id, member_id: other.id },
+      },
+      ctx,
+    );
+    expect(removed.changed).toBe(true);
+    expect(ws.tasks.find((t) => t.id === target.id)!.assigneeIds).not.toContain(other.id);
+  });
+
+  it('credits the taker when the first person joins over realtime', () => {
+    const target = ws.tasks.find((t) => !t.assigneeIds.length && t.status === 'TODO')!;
+    target.claimedBy = null;
+    target.claimedAt = null;
+    const someone = ws.members[2]!;
+
+    applyChange(
+      ws,
+      { table: 'task_assignees', type: 'INSERT', row: { task_id: target.id, member_id: someone.id } },
+      ctx,
+    );
+
+    const after = ws.tasks.find((t) => t.id === target.id)!;
+    expect(after.assigneeIds).toEqual([someone.id]);
+    expect(after.claimedBy).toBe(someone.id);
+    expect(after.claimedAt).toBeTypeOf('number');
+  });
+
+  it('ignores a duplicate membership event, or one for an unknown task', () => {
+    const target = ws.tasks.find((t) => t.assigneeIds.length)!;
+    const existing = target.assigneeIds[0]!;
+    // Re-delivering a row we already hold must not add the person twice.
+    expect(
+      applyChange(
+        ws,
+        { table: 'task_assignees', type: 'INSERT', row: { task_id: target.id, member_id: existing } },
+        ctx,
+      ).changed,
+    ).toBe(false);
+    expect(
+      applyChange(
+        ws,
+        { table: 'task_assignees', type: 'INSERT', row: { task_id: 'not-a-task', member_id: existing } },
+        ctx,
+      ).changed,
+    ).toBe(false);
+  });
+
+  it('moves the "took it" credit off a member who leaves the task', () => {
+    const target = ws.tasks.find((t) => t.assigneeIds.length === 1)!;
+    const leaver = target.assigneeIds[0]!;
+    expect(target.claimedBy).toBe(leaver);
+    applyChange(
+      ws,
+      {
+        table: 'task_assignees',
+        type: 'DELETE',
+        row: { task_id: target.id, member_id: leaver },
+        old: { task_id: target.id, member_id: leaver },
+      },
+      ctx,
+    );
+    const after = ws.tasks.find((t) => t.id === target.id)!;
+    expect(after.assigneeIds).toEqual([]);
+    expect(after.claimedBy).toBeNull();
+    expect(after.claimedAt).toBeNull();
+  });
+
   it('asks for a resync when the position actually changes', () => {
     const target = ws.tasks[0]!;
     primePositions(ws);
@@ -230,11 +329,11 @@ describe('applyChange', () => {
 
   it('drops a removed member and frees their tasks', () => {
     const victim = ws.members.find((m) => m.id === 'm3')!;
-    const owned = ws.tasks.filter((t) => t.assigneeId === victim.id).map((t) => t.id);
+    const owned = ws.tasks.filter((t) => t.assigneeIds.includes(victim.id)).map((t) => t.id);
     expect(owned.length).toBeGreaterThan(0);
     applyChange(ws, { table: 'members', type: 'DELETE', row: { id: victim.id } }, ctx);
     expect(ws.members.find((m) => m.id === victim.id)).toBeUndefined();
-    owned.forEach((id) => expect(ws.tasks.find((t) => t.id === id)?.assigneeId).toBeNull());
+    owned.forEach((id) => expect(ws.tasks.find((t) => t.id === id)!.assigneeIds).toEqual([]));
   });
 
   it('moves the active project when the open one is deleted', () => {

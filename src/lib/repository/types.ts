@@ -18,7 +18,7 @@ import type { AuthUser, Member, Workspace } from '../types';
 
 /** A single row change delivered by the backend. */
 export interface RowChange {
-  table: 'tasks' | 'subtasks' | 'projects' | 'members' | 'activity';
+  table: 'tasks' | 'subtasks' | 'projects' | 'members' | 'activity' | 'task_assignees';
   type: 'INSERT' | 'UPDATE' | 'DELETE';
   /** Row payload (for DELETE, the primary key fields). */
   row: Record<string, unknown>;

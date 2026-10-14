@@ -28,6 +28,7 @@ import {
   strOrNull,
   subtaskFromRow,
   subtaskToRow,
+  taskAssigneeToRow,
   taskFromRow,
   taskToRow,
   type Row,
@@ -42,7 +43,9 @@ import type {
 
 const ACTIVITY_LIMIT = 40;
 /** Subset of a `Workspace` that is stored server-side. */
-const TABLES = ['members', 'projects', 'tasks', 'subtasks', 'activity'] as const;
+const TABLES = ['members', 'projects', 'tasks', 'subtasks', 'task_assignees', 'activity'] as const;
+/** Tables the realtime channel listens to. */
+const SYNCED_TABLES = ['tasks', 'subtasks', 'projects', 'members', 'task_assignees', 'activity'] as const;
 
 /* --------------------------------- helpers -------------------------------- */
 
@@ -270,20 +273,22 @@ export class SupabaseRepository implements WorkspaceRepository {
     const id = await this.ensureWorkspaceId();
     if (!id) return null;
 
-    const [members, projects, tasks, subtasks] = await Promise.all([
+    const [members, projects, tasks, subtasks, assignees] = await Promise.all([
       this.client.from('members').select('*').eq('workspace_id', id),
       this.client.from('projects').select('*').eq('workspace_id', id),
       this.client.from('tasks').select('*').order('position', { ascending: true }),
       this.client.from('subtasks').select('*').order('position', { ascending: true }),
+      this.client.from('task_assignees').select('*'),
     ]);
 
-    const firstError = [members, projects, tasks, subtasks].find((r) => r.error)?.error;
+    const firstError = [members, projects, tasks, subtasks, assignees].find((r) => r.error)?.error;
     if (firstError) throw new Error(`Could not read the workspace: ${firstError.message}`);
 
     const memberRows = (members.data ?? []) as Row[];
     const projectRows = (projects.data ?? []) as Row[];
     const taskRows = (tasks.data ?? []) as Row[];
     const subtaskRows = (subtasks.data ?? []) as Row[];
+    const assigneeRows = (assignees.data ?? []) as Row[];
 
     // The workspace is genuinely empty: create it and return what we seeded.
     void id;
@@ -300,6 +305,19 @@ export class SupabaseRepository implements WorkspaceRepository {
         byTask.set(str(s.task_id), list);
       });
 
+    // Assignment is a join table: a task's people are every row naming it, and
+    // rows for tasks outside this workspace's projects are ignored. `assigned_at`
+    // orders them, so the first person to be put on a task stays first — which
+    // is what the card shows and what its colour is derived from.
+    const byTaskAssignees = new Map<string, Array<{ memberId: string; at: number }>>();
+    assigneeRows
+      .filter((a) => taskIds.has(str(a.task_id)))
+      .forEach((a) => {
+        const list = byTaskAssignees.get(str(a.task_id)) ?? [];
+        list.push({ memberId: str(a.member_id), at: ms(a.assigned_at) ?? 0 });
+        byTaskAssignees.set(str(a.task_id), list);
+      });
+
     // `taskRows` arrives ordered by `position` (the query asks for it), and
     // scopedTasks preserves that order. Renumber the cached positions to match
     // array order per project: if the stored positions disagreed with the sort
@@ -308,6 +326,9 @@ export class SupabaseRepository implements WorkspaceRepository {
     const tasksOut: Task[] = scopedTasks.map((row) => {
       const task = taskFromRow(row);
       task.subs = byTask.get(task.id) ?? [];
+      task.assigneeIds = (byTaskAssignees.get(task.id) ?? [])
+        .sort((a, b) => a.at - b.at)
+        .map((a) => a.memberId);
       return task;
     });
     const counters = new Map<string, number>();
@@ -431,6 +452,41 @@ export class SupabaseRepository implements WorkspaceRepository {
       .filter((row) => stable(row) !== stable(prevSubs.get(str(row.id)) ? subtaskToRow(prevSubs.get(str(row.id))!, str(row.task_id), subPosition.get(str(row.id)) ?? 0) : null))
       .map((row) => ({ ...row, ...tag }));
     if (subRows.length) await this.assert('subtasks', this.client.from('subtasks').upsert(subRows));
+
+    /* ---- task ⇄ member assignment ---- */
+    // Membership is the whole row, so it is only ever inserted or deleted —
+    // never merged. Comparing `task|member` strings against the last synced
+    // snapshot is therefore enough to find both halves of the diff.
+    const key = (taskId: string, memberId: string) => `${taskId}|${memberId}`;
+    const prevAssigneeKeys = new Set(
+      (prev?.tasks ?? []).flatMap((t) => t.assigneeIds.map((m) => key(t.id, m))),
+    );
+    const nextAssigneeKeys = new Set(ws.tasks.flatMap((t) => t.assigneeIds.map((m) => key(t.id, m))));
+
+    const addedAssignees = ws.tasks.flatMap((t) =>
+      t.assigneeIds
+        .filter((m) => !prevAssigneeKeys.has(key(t.id, m)))
+        .map((m) => ({ ...taskAssigneeToRow({ taskId: t.id, memberId: m }), ...tag })),
+    );
+    if (addedAssignees.length) {
+      await this.assert('task_assignees', this.client.from('task_assignees').upsert(addedAssignees));
+    }
+
+    // Removals are grouped per task. A single `in` over both columns would be a
+    // cross product and would delete pairs that are still wanted — e.g. moving
+    // somebody from one task to another would remove them from both.
+    const removals = new Map<string, string[]>();
+    (prev?.tasks ?? []).forEach((t) => {
+      const gone = t.assigneeIds.filter((m) => !nextAssigneeKeys.has(key(t.id, m)));
+      // If the task itself is gone the foreign key cascade already cleared it.
+      if (gone.length && nextTasks.has(t.id)) removals.set(t.id, gone);
+    });
+    for (const [taskId, memberIds] of removals) {
+      await this.assert(
+        'task_assignees',
+        this.client.from('task_assignees').delete().eq('task_id', taskId).in('member_id', memberIds),
+      );
+    }
 
     /* ---- deletions, deepest first ---- */
     const goneSubs = [...prevSubs.keys()].filter((sid) => {
@@ -591,7 +647,7 @@ export class SupabaseRepository implements WorkspaceRepository {
       config: { presence: { key: me?.id ?? 'anonymous' } },
     });
 
-    (['tasks', 'subtasks', 'projects', 'members', 'activity'] as const).forEach((table) => {
+    SYNCED_TABLES.forEach((table) => {
       channel.on(
         'postgres_changes',
         { event: '*', schema: 'public', table },

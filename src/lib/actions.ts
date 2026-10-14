@@ -239,8 +239,20 @@ export class FlowActions {
         break;
 
       case 'reassign':
-        this.reassignModal(id);
+        this.assignModal(id);
         break;
+
+      case 'assign-me': {
+        const me = domain.workspace.me;
+        if (!me) {
+          this.ctx.toast('Nobody is signed in');
+          break;
+        }
+        const r = domain.addAssignee(id, me);
+        this.ctx.toast(r.message);
+        this.refresh();
+        break;
+      }
 
       case 'unassign': {
         const r = domain.reassign(id, null);
@@ -309,8 +321,8 @@ export class FlowActions {
           // already on screen, but saying "added" while the request is still in
           // flight loses the task if the tab is refreshed in that window.
           const saved = await this.ctx.commit();
-          const owner = domain.member(created.assigneeId);
-          const who = owner ? ` · assigned to ${owner.name}` : ' · not taken yet';
+          const owner = created.assigneeIds.length ? domain.assigneeNames(created) : '';
+          const who = owner ? ` · assigned to ${owner}` : ' · not taken yet';
           this.ctx.toast(saved ? `${created.key} added${who}` : `${created.key} is not saved yet${who}`);
         }
         break;
@@ -554,12 +566,12 @@ export class FlowActions {
     const domain = this.ctx.domain;
     const m = domain.member(id);
     if (!m) return;
-    const owned = domain.workspace.tasks.filter((t) => t.assigneeId === id).length;
+    const owned = domain.workspace.tasks.filter((t) => t.assigneeIds.includes(id)).length;
     if (domain.workspace.members.length <= 1) {
       this.ctx.toast('Keep at least one member');
       return;
     }
-    if (owned && !this.ctx.confirm(`${m.name} owns ${owned} tasks. Move them to the open pool and remove?`)) {
+    if (owned && !this.ctx.confirm(`${m.name} is on ${owned} tasks. Take them off and remove?`)) {
       return;
     }
     const r = domain.removeMember(id);
@@ -614,12 +626,20 @@ export class FlowActions {
     );
   }
 
-  private reassignModal(id: string): void {
+  /**
+   * The multi-select. Every ticked member ends up on the task; unticking
+   * somebody takes them off it, and unticking everybody returns the task to the
+   * open pool — so the same modal covers assign, unassign and clear.
+   */
+  private assignModal(id: string): void {
     const domain = this.ctx.domain;
     const t = domain.findTask(id);
     if (!t) return;
-    this.showModal(`Reassign ${t.key}`, reassignBody(domain, t), modalFooterSubmit('Reassign'), (d) => {
-      const r = domain.reassign(t.id, d.owner || null);
+    this.showModal(`Who is on ${t.key}?`, reassignBody(domain, t), modalFooterSubmit('Save assignees'), (d) => {
+      const memberIds = Object.keys(d)
+        .filter((key) => key.startsWith('member:'))
+        .map((key) => d[key] ?? '');
+      const r = domain.setAssignees(t.id, memberIds);
       this.refresh();
       this.ctx.toast(r.message);
       return true;

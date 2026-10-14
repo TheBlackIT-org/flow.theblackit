@@ -109,7 +109,13 @@ export interface Task {
   typeId: string;
   stage: string;
   status: StatusId;
-  assigneeId: string | null;
+  /**
+   * Everyone on this task, in display order. An empty list is the open pool.
+   *
+   * Deliberately not "one owner plus helpers": every assignee is equal, so a
+   * task can be shared without anybody being demoted to a watcher.
+   */
+  assigneeIds: string[];
   priority: PriorityId;
   /** Story points / days — kept for parity with the prototype. */
   estimate: number;
@@ -120,6 +126,10 @@ export interface Task {
   description: string;
   createdAt: number;
   createdBy: string | null;
+  /**
+   * Who first pulled this out of the open pool, and when. Historical: it stays
+   * true after other people are added, and is what "took it 3d ago" means.
+   */
   claimedBy: string | null;
   claimedAt: number | null;
   completedAt: number | null;

@@ -137,9 +137,17 @@ whole upsert when a column is unknown. Additive first, then deploy.
 | Order | Step | Why |
 | --- | --- | --- |
 | 1 | Apply `0003_member_identity.sql` | Additive; old client unaffected |
+| 1b | Apply `0005_task_assignees.sql` | Additive; old client unaffected |
 | 2 | Set `PUBLIC_REQUIRE_LOGIN=true` and deploy | The board now needs a session |
 | 3 | Everyone signs in and is bound (existing team: the name picker; new team: the wizard, then email invites) | Confirm nobody is locked out |
 | 4 | Apply `0004_tighten_rls.sql` | Replaces the permissive `anon` policies |
+
+`0004` carries the highest-stakes change and runs **last, whatever its number** —
+it is the moment the anon key stops being a credential. Everything before it is
+additive and safe to apply while the old build is still live. Tell everyone to
+reload after the deploy: a tab still running the previous build keeps working,
+but its assignment writes are only visible to the new client through the
+`tasks_mirror_assignee` bridge.
 
 Applying `0004` before step 2 locks every deployed client out: their requests
 carry no access token, so `anon` is denied and the board stops saving for the
@@ -166,9 +174,16 @@ append-only by policy: there is no update or delete policy on `activity`.
 
 ```
 workspaces ─┬─ members   (the "Acting as" list; email = invite, user_id = account)
-            └─ projects ──── tasks ──── subtasks
-                                └─ activity (append-only trail)
+            └─ projects ──── tasks ─┬─ subtasks
+                                   ├─ task_assignees (who is on it — many, equal)
+                                   └─ activity (append-only trail)
 ```
+
+Assignment is a join table rather than a column because a task can have several
+people on it. `tasks.assignee_id` still exists for the transition — see
+`0005_task_assignees.sql` — but the client ignores it, and a trigger keeps the
+old column and the join table in step so a tab still running the previous build
+does not lose anybody's work.
 
 Task keys (`NE-1`, `NE-2`) come from `next_task_key(project_id)`, a Postgres
 function that reserves the number atomically, so two people creating a task at
@@ -202,8 +217,12 @@ counter to the number of tasks it holds.
 - **Five statuses per task**, cycled by clicking the rail node:
   Not Taken → In Progress → In Review → Done → Blocked. Each status recolours
   the node, the card border and the connector segment.
-- **Open pool.** A task with no owner shows *Take this task*; claiming records
-  who took it and when, and moves it to In Progress.
+- **Shared ownership.** A task can have any number of assignees, all equal — no
+  primary owner and nobody demoted to a watcher. The card shows overlapping
+  faces plus a count, ticking people in the **Assign people** modal sets the
+  whole list, and **Assign me too** puts you on somebody else's task without
+  disturbing them. An empty list is the open pool, and anyone can
+  **Take this task**.
 - **Subtasks.** Any member can tick, add or delete steps; the chip shows
   progress.
 - **Advisory dependencies.** `dependsOn` renders as "Waiting on …· optional,
@@ -260,7 +279,8 @@ supabase/migrations/
   0001_init.sql            tables, task-key function, permissive RLS
   0002_add_mutation_ids.sql  the echo-suppression tag on members/projects
   0003_member_identity.sql   members.email + the two unique indexes (additive)
-  0004_tighten_rls.sql       the cutover: authenticated members only
+  0004_tighten_rls.sql       the cutover: authenticated members only (RUN LAST)
+  0005_task_assignees.sql    the join table + backfill + the stale-tab bridge
 test/
   domain.test.ts           rules: claim, cycle, ordering, assistant, storage
   app.test.ts              real DOM (happy-dom): clicks, modals, wizard, chat

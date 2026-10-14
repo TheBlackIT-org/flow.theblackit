@@ -82,6 +82,7 @@ export const ACTIONS = [
   'subs',
   'edit',
   'reassign',
+  'assign-me',
   'unassign',
   'delete',
   'menu',

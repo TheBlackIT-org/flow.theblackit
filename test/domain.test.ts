@@ -62,7 +62,7 @@ describe('seed workspace', () => {
   it('includes an AI agent and unowned tasks for the claim flow', () => {
     const d = domain();
     expect(d.member('m7')?.agent).toBe(true);
-    expect(d.workspace.tasks.filter((t) => !t.assigneeId).length).toBeGreaterThan(0);
+    expect(d.workspace.tasks.filter((t) => !t.assigneeIds.length).length).toBeGreaterThan(0);
   });
 });
 
@@ -119,7 +119,7 @@ describe('filters', () => {
   it('filters by member and by status', () => {
     const d = domain();
     d.workspace.fMember = 'none';
-    expect(d.visibleTasks().every((t) => !t.assigneeId)).toBe(true);
+    expect(d.visibleTasks().every((t) => !t.assigneeIds.length)).toBe(true);
     d.workspace.fMember = 'all';
     d.workspace.fStatus = 'BLOCK';
     expect(d.visibleTasks().every((t) => t.status === 'BLOCK')).toBe(true);
@@ -152,30 +152,117 @@ describe('status changes', () => {
 describe('claiming unowned work', () => {
   it('records who took an unowned task and when, and starts it', () => {
     const d = domain();
-    const target = d.workspace.tasks.find((t) => !t.assigneeId)!;
+    const target = d.workspace.tasks.find((t) => !t.assigneeIds.length)!;
     const r = d.claim(target.id);
     expect(r.ok).toBe(true);
     const after = d.findTask(target.id)!;
-    expect(after.assigneeId).toBe('m1');
+    expect(after.assigneeIds).toEqual(['m1']);
     expect(after.claimedBy).toBe('m1');
     expect(after.claimedAt).toBeTypeOf('number');
     expect(after.status).toBe('PROG');
   });
 
-  it('refuses to steal an already-claimed task', () => {
+  it('joins a task somebody else is already on, without taking their credit', () => {
     const d = domain();
+    const before = d.findTask('t1')!;
+    const taker = before.claimedBy;
     const r = d.claim('t1');
-    expect(r.ok).toBe(false);
-    expect(r.message).toContain('Already taken by');
-    expect(d.findTask('t1')?.assigneeId).toBe('m3');
+    // A task can be shared, so "somebody is already on it" is not a refusal —
+    // it is the normal joint-assignment case.
+    expect(r.ok).toBe(true);
+    const after = d.findTask('t1')!;
+    expect(after.assigneeIds).toEqual(['m3', 'm1']);
+    expect(after.claimedBy).toBe(taker);
+    expect(after.claimedAt).toBe(before.claimedAt);
+  });
+
+  it('refuses a second time when you are already on the task', () => {
+    const d = domain();
+    expect(d.claim('t1').ok).toBe(true);
+    const again = d.claim('t1');
+    expect(again.ok).toBe(false);
+    expect(again.message).toContain('Already on');
+    expect(d.findTask('t1')!.assigneeIds).toEqual(['m3', 'm1']);
+  });
+
+  it('adds a second person without disturbing the first', () => {
+    const d = domain();
+    const r = d.addAssignee('t1', 'm4');
+    expect(r.message).toContain('assigned to');
+    expect(d.findTask('t1')!.assigneeIds).toEqual(['m3', 'm4']);
+    // Adding the same person twice is a no-op, not a duplicate row.
+    d.addAssignee('t1', 'm4');
+    expect(d.findTask('t1')!.assigneeIds).toEqual(['m3', 'm4']);
+  });
+
+  it('takes one person off and leaves the rest on the task', () => {
+    const d = domain();
+    d.addAssignee('t1', 'm4');
+    const r = d.removeAssignee('t1', 'm4');
+    expect(r.message).toContain('removed from');
+    expect(d.findTask('t1')!.assigneeIds).toEqual(['m3']);
+    // Removing the last person is what returns it to the pool.
+    d.removeAssignee('t1', 'm3');
+    expect(d.findTask('t1')!.assigneeIds).toEqual([]);
+    expect(d.findTask('t1')!.claimedBy).toBeNull();
+    expect(d.findTask('t1')!.claimedAt).toBeNull();
+  });
+
+  it('hands the "took it" credit to whoever is left when the taker leaves', () => {
+    const d = domain();
+    d.addAssignee('t1', 'm4');
+    d.removeAssignee('t1', 'm3');
+    expect(d.findTask('t1')!.claimedBy).toBe('m4');
+  });
+
+  it('sets the whole list at once from the multi-select', () => {
+    const d = domain();
+    const r = d.setAssignees('t1', ['m2', 'm5', 'm5']);
+    expect(d.findTask('t1')!.assigneeIds).toEqual(['m2', 'm5']);
+    expect(r.message).toContain('added');
+    // Unticking everybody empties the pool rather than leaving a stale owner.
+    d.setAssignees('t1', []);
+    expect(d.findTask('t1')!.assigneeIds).toEqual([]);
+    expect(d.findTask('t1')!.claimedBy).toBeNull();
+  });
+
+  it('ignores ids that are not members', () => {
+    const d = domain();
+    d.setAssignees('t1', ['m2', 'not-a-member']);
+    expect(d.findTask('t1')!.assigneeIds).toEqual(['m2']);
+  });
+
+  it('starts a not-taken task as soon as somebody is on it', () => {
+    const d = domain();
+    const unowned = d.workspace.tasks.find((t) => !t.assigneeIds.length && t.status === 'TODO')!;
+    d.addAssignee(unowned.id, 'm4');
+    expect(d.findTask(unowned.id)!.status).toBe('PROG');
+  });
+
+  it('filters by membership, not ownership', () => {
+    const d = domain();
+    d.addAssignee('t1', 'm4');
+    d.workspace.fMember = 'm4';
+    expect(d.visibleTasks().map((t) => t.id)).toContain('t1');
+    d.workspace.fMember = 'none';
+    expect(d.visibleTasks().map((t) => t.id)).not.toContain('t1');
   });
 
   it('returns a task to the open pool', () => {
     const d = domain();
     d.reassign('t1', null);
     const t = d.findTask('t1')!;
-    expect(t.assigneeId).toBeNull();
+    expect(t.assigneeIds).toEqual([]);
     expect(t.claimedAt).toBeNull();
+  });
+
+  it('replaces the list rather than adding to it', () => {
+    const d = domain();
+    d.addAssignee('t1', 'm4');
+    // "Put this on X" means X owns it now — the blunt instrument, as distinct
+    // from addAssignee.
+    d.reassign('t1', 'm5');
+    expect(d.findTask('t1')!.assigneeIds).toEqual(['m5']);
   });
 });
 
@@ -256,7 +343,7 @@ describe('team', () => {
     const r = d.removeMember('m3');
     expect(r.ok).toBe(true);
     expect(r.owned).toBeGreaterThan(0);
-    expect(d.workspace.tasks.some((t) => t.assigneeId === 'm3')).toBe(false);
+    expect(d.workspace.tasks.some((t) => t.assigneeIds.includes('m3'))).toBe(false);
   });
 
   it('never removes the last member', () => {
@@ -312,7 +399,7 @@ describe('assistant', () => {
   it('reassigns by task key', () => {
     const r = d.reply('assign NE-1 to Rahul');
     expect(r.mutated).toBe(true);
-    expect(d.findTask('t1')?.assigneeId).toBe('m4');
+    expect(d.findTask('t1')!.assigneeIds).toEqual(['m4']);
   });
 
   it('marks a task done by key', () => {
@@ -348,7 +435,7 @@ describe('assistant', () => {
     const pending = d.parseTask('add task Invite 50 beta testers for Meera due friday');
     const t = (await d.addAssistantTask(pending))!;
     expect(d.projectTasks().at(-1)?.id).toBe(t.id);
-    expect(t.assigneeId).toBe('m5');
+    expect(t.assigneeIds).toEqual(['m5']);
     expect(t.status).toBe('PROG');
   });
 });
@@ -425,7 +512,7 @@ describe('initialWorkspace — shared workspace keys', () => {
     const projectIds = new Set(ws.projects.map((p) => p.id));
     ws.tasks.forEach((t) => {
       expect(projectIds.has(t.projectId), `${t.key} points at a real project`).toBe(true);
-      if (t.assigneeId) expect(memberIds.has(t.assigneeId), `${t.key} owner exists`).toBe(true);
+      t.assigneeIds.forEach((id) => expect(memberIds.has(id), `${t.key} assignee exists`).toBe(true));
       if (t.claimedBy) expect(memberIds.has(t.claimedBy), `${t.key} claimer exists`).toBe(true);
     });
   });

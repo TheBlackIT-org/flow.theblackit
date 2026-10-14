@@ -13,6 +13,7 @@ import {
   memberToRow,
   projectToRow,
   subtaskToRow,
+  taskAssigneeToRow,
   taskToRow,
 } from '../src/lib/repository/mappers';
 
@@ -28,13 +29,15 @@ const LATER_SQL = readdirSync(new URL('../supabase/migrations', import.meta.url)
  * Column names declared for a table.
  *
  * Reads `0001_init.sql` **and** every later migration: the schema a client
- * actually talks to is the sum of all of them, so a column added by an ALTER is
- * as declared as one in the original CREATE. Only counting the first file made
- * a legitimate new column — `members.email` — look like drift.
+ * actually talks to is the sum of all of them, so a column added by an ALTER —
+ * or a whole table added later — is as declared as one in the original CREATE.
+ * Only counting the first file made a legitimate new column (`members.email`)
+ * look like drift, and left later tables invisible to this suite entirely.
  */
 function columnsOf(table: string): Set<string> {
-  const match = SQL.match(new RegExp(`create table if not exists ${table} \\(([\\s\\S]*?)\\n\\);`));
-  if (!match) throw new Error(`table ${table} not found in the migration`);
+  const create = new RegExp(`create table if not exists ${table} \\(([\\s\\S]*?)\\n\\);`);
+  const match = SQL.match(create) ?? LATER_SQL.map((sql) => sql.match(create)).find(Boolean);
+  if (!match) throw new Error(`table ${table} not found in any migration`);
   const columns = new Set<string>();
   for (const line of match[1]!.split('\n')) {
     const trimmed = line.trim();
@@ -48,6 +51,9 @@ function columnsOf(table: string): Set<string> {
   }
   return columns;
 }
+
+/** Every migration's text, for assertions that span all of them. */
+const ALL_SQL = [SQL, ...LATER_SQL].join('\n');
 
 const WS_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -94,6 +100,7 @@ describe('mapper rows only use declared columns', () => {
     ['projects', projectToRow(ws.projects[0]!, WS_ID)],
     ['tasks', taskToRow(task, 3)],
     ['subtasks', subtaskToRow(task.subs[0]!, task.id, 0)],
+    ['task_assignees', taskAssigneeToRow({ taskId: task.id, memberId: ws.members[0]!.id })],
   ];
 
   it.each(cases)('%s row matches the declared columns', (table, row) => {
@@ -116,11 +123,50 @@ describe('mapper rows only use declared columns', () => {
     // The client tags every row it writes with a mutation id. If a table lacks
     // the column, PostgREST rejects the whole upsert and the write is lost —
     // which is exactly what happened to `members` and `projects`.
-    for (const table of ['tasks', 'subtasks', 'projects', 'members', 'activity']) {
+    for (const table of ['tasks', 'subtasks', 'projects', 'members', 'activity', 'task_assignees']) {
       expect(columnsOf(table).has('mutation_id'), `${table} is written with a mutation_id but has no column`).toBe(
         true,
       );
     }
+  });
+
+  it('declares the assignment join table', () => {
+    // A task can have several assignees, so membership lives in its own table.
+    // A missing column here is a silent failure: the client upserts a row
+    // PostgREST rejects, and assignment simply stops syncing.
+    expect(ALL_SQL).toContain('create table if not exists task_assignees');
+    const columns = columnsOf('task_assignees');
+    for (const column of ['task_id', 'member_id', 'assigned_at', 'assigned_by', 'mutation_id']) {
+      expect(columns.has(column), `task_assignees.${column} missing`).toBe(true);
+    }
+    // A composite primary key, so the same person cannot be added twice.
+    expect(ALL_SQL).toMatch(/primary key \(task_id, member_id\)/i);
+  });
+
+  it('publishes every table the client subscribes to', () => {
+    // Realtime only broadcasts tables in the publication. A table that is
+    // written but not published saves fine and never reaches anybody.
+    for (const table of ['tasks', 'subtasks', 'projects', 'members', 'activity', 'task_assignees']) {
+      expect(ALL_SQL, `${table} is never added to supabase_realtime`).toContain(table);
+    }
+    // Deletes carry the old row only with a full replica identity; a composite
+    // key needs both columns to know which membership went.
+    expect(ALL_SQL).toMatch(/alter table task_assignees replica identity full/i);
+  });
+
+  it('enables row level security on the assignment table', () => {
+    expect(ALL_SQL).toMatch(/alter table task_assignees\s+enable row level security/);
+    // And the cutover knows about it, so 0004 does not leave it world-writable.
+    expect(LATER_SQL.join('\n')).toMatch(/task_assignees/);
+  });
+
+  it('keeps the legacy assignee column so a stale tab still works', () => {
+    // Expand, do not contract: the deployed client still writes assignee_id.
+    // Dropping it in 0005 would break every open tab the moment it is applied.
+    expect(SQL).toMatch(/assignee_id\s+uuid\s+references members\(id\)/);
+    expect(LATER_SQL.join('\n')).not.toMatch(/drop column assignee_id/i);
+    // And a bridge keeps the old column and the join table in step meanwhile.
+    expect(LATER_SQL.join('\n')).toMatch(/create trigger tasks_mirror_assignee/);
   });
 
   it('declares the identity columns sign-in binds against', () => {

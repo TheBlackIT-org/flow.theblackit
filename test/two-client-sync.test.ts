@@ -52,7 +52,7 @@ function sharedWorkspace(): Workspace {
   ws.projects.forEach((pr) => remap(pr.id));
   ws.tasks.forEach((t) => {
     remap(t.id);
-    remap(t.assigneeId);
+    t.assigneeIds.forEach((id) => remap(id));
     remap(t.claimedBy);
     remap(t.createdBy);
   });
@@ -68,7 +68,7 @@ function sharedWorkspace(): Workspace {
       ...t,
       id: remap(t.id)!,
       projectId: remap(t.projectId)!,
-      assigneeId: remap(t.assigneeId),
+      assigneeIds: t.assigneeIds.map((id) => remap(id)!),
       claimedBy: remap(t.claimedBy),
       createdBy: remap(t.createdBy),
       position: i,
