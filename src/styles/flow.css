@@ -164,9 +164,11 @@ body.grabbing-grip { cursor: grabbing; }
    inside the button below and stretched it across the row. */
 .srow .stext { flex: 1; min-width: 0; }
 .srow.on .stext { color: var(--muted-2); }
-/* Who owns this step. Hidden until the row is hovered, except once somebody
-   has it — an assigned step should be visible without hunting for it. */
-.sassign { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: var(--muted-2); border: 1px dashed var(--stroke); opacity: 0; transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+/* Who owns this step.
+   Always visible, dimmed until the row is hovered. Hiding it entirely (the way
+   the delete ✕ is hidden) left the whole step-assignment feature undiscoverable:
+   there was nothing on screen to say a step *could* have an owner. */
+.sassign { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: var(--muted-2); border: 1px dashed var(--stroke); opacity: 0.45; transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
 .srow:hover .sassign, .sassign.on { opacity: 1; }
 .sassign.on { border-style: solid; border-color: transparent; }
 .sassign:hover { border-color: rgba(46, 230, 197, 0.55); color: var(--teal); }
