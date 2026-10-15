@@ -1181,3 +1181,95 @@ describe('resync never discards unsaved work', () => {
     expect(h.status().state).not.toBe('error');
   });
 });
+
+/**
+ * The heartbeat.
+ *
+ * `resync` runs on a 60-second timer, on window focus and on every reconnect.
+ * Adopting a snapshot it already had meant re-rendering the whole board on that
+ * schedule, which destroyed whatever was half-typed — a bug with no error and
+ * no way to get the text back.
+ */
+describe('a resync with nothing new to say', () => {
+  function heartbeatScene() {
+    let current = seed(NOW);
+    current.mode = 'live' as const;
+    current.workspaceId = 'ws-1';
+    current.tasks.forEach((t, i) => {
+      t.position = i;
+    });
+
+    // A distinct copy. Sharing one object would make "the server changed" and
+    // "nothing changed" indistinguishable to the test itself.
+    const server = JSON.parse(JSON.stringify(current)) as ReturnType<typeof seed>;
+
+    const adopted: string[] = [];
+    const repo = {
+      kind: 'supabase' as const,
+      load: vi.fn(async () => JSON.parse(JSON.stringify(server))),
+      flush: vi.fn(async () => {}),
+      bootstrap: vi.fn(async (ws: unknown) => ws),
+      nextTaskKey: vi.fn(async () => 'NE-1'),
+      subscribe: vi.fn(() => () => {}),
+      logActivity: vi.fn(async () => {}),
+      recentActivity: vi.fn(async () => []),
+    };
+    const sync = new SyncController(new RepositoryHost(repo as never), {
+      onWorkspaceChanged: (replacement) => {
+        if (!replacement) return;
+        adopted.push(replacement.tasks[0]!.title);
+        // Mirror the app: adopting replaces what the controller holds.
+        current = replacement;
+      },
+      onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
+      onStatus: vi.fn(),
+      onPresence: vi.fn(),
+    });
+    sync.setWorkspaceRef(() => current);
+    return { sync, adopted, server: () => server };
+  }
+
+  it('re-renders nothing when the snapshot is identical', async () => {
+    const h = heartbeatScene();
+    await h.sync.resync();
+    expect(h.adopted).toEqual([]);
+    // And again, because the heartbeat does not stop.
+    await h.sync.resync();
+    await h.sync.resync();
+    expect(h.adopted).toEqual([]);
+  });
+
+  it('still adopts a snapshot that really changed', async () => {
+    const h = heartbeatScene();
+    await h.sync.resync();
+    expect(h.adopted).toEqual([]);
+
+    h.server().tasks[0]!.title = 'Renamed by somebody else';
+    await h.sync.resync();
+    expect(h.adopted).toEqual(['Renamed by somebody else']);
+
+    // …and then goes quiet again rather than re-rendering on every tick.
+    await h.sync.resync();
+    expect(h.adopted).toHaveLength(1);
+  });
+
+  it('notices a teammate joining an existing task', async () => {
+    // A set membership change is easy to miss with a shallow comparison, and
+    // exactly the kind of change a second person makes.
+    const h = heartbeatScene();
+    await h.sync.resync();
+    h.server().tasks[0]!.assigneeIds = [...h.server().tasks[0]!.assigneeIds, 'm5'];
+    await h.sync.resync();
+    expect(h.adopted).toHaveLength(1);
+  });
+
+  it('notices a change to a step inside a task', async () => {
+    const h = heartbeatScene();
+    await h.sync.resync();
+    const task = h.server().tasks.find((t) => t.subs.length)!;
+    task.subs[0]!.t = 'Renamed step';
+    await h.sync.resync();
+    expect(h.adopted).toHaveLength(1);
+  });
+});

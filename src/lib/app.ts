@@ -9,6 +9,7 @@
 import { FlowActions, type FlowActionsContext } from './actions';
 import { NoAuth, type AuthPort } from './auth';
 import { APP_NAME, STORAGE_KEY } from './constants';
+import { swapHtml } from './dom-state';
 import { emptyWorkspace, esc, FlowDomain, seed } from './domain';
 import {
   HOOKS,
@@ -453,7 +454,7 @@ export class BlackitFlowApp {
 
   private renderActivity(entries: Awaited<ReturnType<RepositoryHost['recentActivity']>>): void {
     const el = document.querySelector(HOOKS.activity);
-    if (el) el.innerHTML = renderActivityFeed(entries);
+    if (el) swapHtml(el, renderActivityFeed(entries));
   }
 
   /** The `#fab` glyph depends on chat state, so it is set on the client. */
@@ -558,7 +559,7 @@ export class BlackitFlowApp {
 
   private renderBar(): void {
     const el = document.querySelector(HOOKS.ctrls);
-    if (el) el.innerHTML = renderControls(this.domain, this.account);
+    if (el) swapHtml(el, renderControls(this.domain, this.account));
     const menu = document.querySelector(HOOKS.menu);
     // The popover moves with its button, so the slot is rebuilt wholesale — but
     // only when the identity behind it changed (or it is missing). Rebuilding
@@ -577,13 +578,13 @@ export class BlackitFlowApp {
 
   private renderSub(): void {
     const el = document.querySelector(HOOKS.sub);
-    if (el) el.innerHTML = renderSubBar(this.domain);
+    if (el) swapHtml(el, renderSubBar(this.domain));
   }
 
   private renderChain(): void {
     const el = document.querySelector(HOOKS.chain);
     if (!el) return;
-    el.innerHTML = renderChain(this.domain);
+    swapHtml(el, renderChain(this.domain));
     if (this.domain.workspace.enter) {
       this.domain.workspace.enter = null;
       this.domain.save();
@@ -600,7 +601,7 @@ export class BlackitFlowApp {
     if (fab) fab.innerHTML = fabIcon(this.chat.open);
     if (!chat) return;
     chat.classList.toggle('on', this.chat.open);
-    chat.innerHTML = renderChat(this.domain, this.chat);
+    swapHtml(chat, renderChat(this.domain, this.chat));
     const msgs = chat.querySelector<HTMLElement>('#msgs');
     if (msgs) msgs.scrollTop = msgs.scrollHeight;
   }
@@ -614,14 +615,14 @@ export class BlackitFlowApp {
     if (this.authScreen) {
       document.body.classList.add('booting');
       el.classList.add('on');
-      el.innerHTML = renderAuthScreen(this.authScreen);
+      swapHtml(el, renderAuthScreen(this.authScreen));
       return;
     }
     const setup = this.domain.workspace.setup;
     // Until `ready`, hold the shell back with the loader rather than guess.
     document.body.classList.toggle('booting', !this.ready || !setup);
     el.classList.toggle('on', this.ready && !setup);
-    el.innerHTML = renderWelcome(this.domain);
+    swapHtml(el, renderWelcome(this.domain));
   }
 
   /* ------------------------------- bits -------------------------------- */

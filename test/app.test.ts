@@ -385,6 +385,64 @@ describe('subtasks', () => {
   });
 });
 
+describe('typing survives a re-render', () => {
+  // Regression: every render replaced the chain's innerHTML, and anything typed
+  // into it lived only there. A teammate adding a task — or just the minute
+  // heartbeat — silently erased a half-written one.
+  it('keeps a half-written task and the caret', async () => {
+    await click($('[data-act="compose-end"]'));
+    const title = $('#newTitle') as HTMLInputElement;
+    title.value = 'Half-written sentence';
+    title.focus();
+
+    // A full refresh, which is what a remote change triggers.
+    await click($('[data-act="claim"]'));
+
+    expect($('#newTitle')).not.toBeNull();
+    expect(($('#newTitle') as HTMLInputElement).value).toBe('Half-written sentence');
+    expect(win.document.activeElement).toBe($('#newTitle'));
+  });
+
+  it('keeps a half-written subtask step', async () => {
+    await click($('.row[data-task="t1"] .subtoggle'));
+    ($('[data-subinput="t1"]') as HTMLInputElement).value = 'Half-written step';
+
+    // Ticking a step re-renders the whole chain.
+    await click($$('.row[data-task="t1"] .sbox')[0]);
+
+    expect(($('[data-subinput="t1"]') as HTMLInputElement).value).toBe('Half-written step');
+  });
+
+  it('keeps a half-asked question in the assistant', async () => {
+    await click($('[data-act="chat-toggle"]'));
+    ($('#chatIn') as HTMLInputElement).value = 'what is blocked in this project';
+
+    await click($('[data-act="claim"]'));
+
+    expect(($('#chatIn') as HTMLInputElement).value).toBe('what is blocked in this project');
+  });
+
+  it('keeps the composer’s other fields too', async () => {
+    await click($('[data-act="compose-end"]'));
+    ($('#newTitle') as HTMLInputElement).value = 'A task';
+    ($('#newDesc') as HTMLInputElement).value = 'with a description';
+    ($('#newDue') as HTMLInputElement).value = '2026-11-01';
+
+    await click($('[data-act="claim"]'));
+
+    expect(($('#newDesc') as HTMLInputElement).value).toBe('with a description');
+    expect(($('#newDue') as HTMLInputElement).value).toBe('2026-11-01');
+  });
+
+  it('does not resurrect text once the composer is gone', async () => {
+    // The restore must not fabricate a field that the new render does not have.
+    await click($('[data-act="compose-end"]'));
+    ($('#newTitle') as HTMLInputElement).value = 'Abandoned';
+    await click($('[data-act="cancel-compose"]'));
+    expect($('#newTitle')).toBeNull();
+  });
+});
+
 describe('modals', () => {
   it('edits a task and saves the changes', async () => {
     await click($('.row[data-task="t1"] .kebab'));
