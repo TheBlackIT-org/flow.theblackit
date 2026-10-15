@@ -82,6 +82,25 @@ as $$
   );
 $$;
 
+/** Membership resolved through the subtask's parent task. */
+create or replace function is_subtask_member(p_subtask_id uuid)
+returns boolean
+language sql
+security definer
+stable
+set search_path = public
+as $$
+  select exists (
+    select 1
+      from subtasks s
+      join tasks t on t.id = s.task_id
+      join projects p on p.id = t.project_id
+      join members m on m.workspace_id = p.workspace_id
+     where s.id = p_subtask_id
+       and m.user_id = auth.uid()
+  );
+$$;
+
 /** The signed-in account's email, lower-cased, or null when there is none. */
 create or replace function current_email()
 returns text
@@ -124,7 +143,7 @@ begin
   for t in
     select unnest(array[
       'workspaces', 'members', 'projects', 'tasks', 'subtasks', 'activity',
-      'task_assignees', 'notifications'
+      'task_assignees', 'notifications', 'subtask_assignees'
     ])
   loop
     if to_regclass('public.' || t) is null then
@@ -320,6 +339,36 @@ begin
   execute 'drop policy if exists task_assignees_delete on task_assignees';
   execute 'create policy task_assignees_delete on task_assignees
              for delete to authenticated using (is_task_member(task_id))';
+end;
+$$;
+
+-- ---------------------------------------- step-assignment policies
+--
+-- Guarded: `0008_subtask_assignees.sql` is additive and may not have been
+-- applied when this cutover runs.
+
+do $$
+begin
+  if to_regclass('public.subtask_assignees') is null then
+    return;
+  end if;
+
+  execute 'drop policy if exists subtask_assignees_select on subtask_assignees';
+  execute 'create policy subtask_assignees_select on subtask_assignees
+             for select to authenticated using (is_subtask_member(subtask_id))';
+
+  execute 'drop policy if exists subtask_assignees_insert on subtask_assignees';
+  execute 'create policy subtask_assignees_insert on subtask_assignees
+             for insert to authenticated with check (is_subtask_member(subtask_id))';
+
+  execute 'drop policy if exists subtask_assignees_update on subtask_assignees';
+  execute 'create policy subtask_assignees_update on subtask_assignees
+             for update to authenticated using (is_subtask_member(subtask_id))
+             with check (is_subtask_member(subtask_id))';
+
+  execute 'drop policy if exists subtask_assignees_delete on subtask_assignees';
+  execute 'create policy subtask_assignees_delete on subtask_assignees
+             for delete to authenticated using (is_subtask_member(subtask_id))';
 end;
 $$;
 

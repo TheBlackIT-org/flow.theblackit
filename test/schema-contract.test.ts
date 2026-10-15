@@ -93,7 +93,7 @@ describe('mapper rows only use declared columns', () => {
     t.position = i;
   });
   const task = ws.tasks[0]!;
-  task.subs = [{ id: 's-1', t: 'A step', done: false }];
+  task.subs = [{ id: 's-1', t: 'A step', done: false, assigneeIds: [] }];
 
   const cases: Array<[string, Record<string, unknown>]> = [
     ['members', memberToRow(ws.members[0]!, WS_ID)],
@@ -143,10 +143,44 @@ describe('mapper rows only use declared columns', () => {
     expect(ALL_SQL).toMatch(/primary key \(task_id, member_id\)/i);
   });
 
+  it('declares the step-assignment join table', () => {
+    // A step takes several people, the same shape as a task — so the same table
+    // shape, and the same silent failure if a column is missing.
+    expect(ALL_SQL).toContain('create table if not exists subtask_assignees');
+    const columns = columnsOf('subtask_assignees');
+    for (const column of ['subtask_id', 'member_id', 'assigned_at', 'assigned_by', 'mutation_id']) {
+      expect(columns.has(column), `subtask_assignees.${column} missing`).toBe(true);
+    }
+    expect(ALL_SQL).toMatch(/primary key \(subtask_id, member_id\)/i);
+    expect(ALL_SQL).toMatch(/alter table subtask_assignees replica identity full/i);
+    expect(ALL_SQL).toMatch(/alter table subtask_assignees\s+enable row level security/);
+    // And the cutover knows about it, or it stays world-writable after 0004.
+    expect(LATER_SQL.join('\n')).toMatch(/subtask_assignees/);
+    // The bridge keeps a stale tab's single-owner write visible meanwhile.
+    expect(ALL_SQL).toMatch(/create trigger subtasks_mirror_assignee/);
+  });
+
+  it('notifies step hand-overs from the join table, not the old column', () => {
+    const sql = LATER_SQL.join('\n');
+    expect(sql).toContain('create trigger subtask_assignees_notify');
+    // Superseded: leaving both attached would notify twice for one hand-over.
+    expect(sql).toMatch(/drop trigger if exists subtasks_notify_assignment/);
+    expect(sql).toMatch(/drop function if exists notify_subtask_assignment/);
+  });
+
   it('publishes every table the client subscribes to', () => {
     // Realtime only broadcasts tables in the publication. A table that is
     // written but not published saves fine and never reaches anybody.
-    for (const table of ['tasks', 'subtasks', 'projects', 'members', 'activity', 'task_assignees']) {
+    for (const table of [
+      'tasks',
+      'subtasks',
+      'projects',
+      'members',
+      'activity',
+      'task_assignees',
+      'subtask_assignees',
+      'notifications',
+    ]) {
       expect(ALL_SQL, `${table} is never added to supabase_realtime`).toContain(table);
     }
     // Deletes carry the old row only with a full replica identity; a composite

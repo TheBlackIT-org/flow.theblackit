@@ -296,7 +296,7 @@ describe('composer', () => {
     const d = domain();
     d.workspace.composer = 1;
     d.workspace.composerAnchor = 't3';
-    const created = (await d.createTask({ title: 'Draft the invite', typeId: 'tt3', assigneeId: null, due: null, priority: 'normal' }))!;
+    const created = (await d.createTask({ title: 'Draft the invite', typeId: 'tt3', assigneeIds: [], due: null, priority: 'normal' }))!;
     const ids = d.projectTasks().map((t) => t.id);
     expect(ids.indexOf(created.id)).toBe(ids.indexOf('t3') - 1);
     expect(created.status).toBe('TODO');
@@ -306,7 +306,7 @@ describe('composer', () => {
 
   it('starts an assigned task in progress and keys it off the project', async () => {
     const d = domain();
-    const created = (await d.createTask({ title: 'Ship it', typeId: 'tt1', assigneeId: 'm3', due: '2026-10-20', priority: 'urgent' }))!;
+    const created = (await d.createTask({ title: 'Ship it', typeId: 'tt1', assigneeIds: ['m3'], due: '2026-10-20', priority: 'urgent' }))!;
     expect(created.status).toBe('PROG');
     expect(created.key).toBe(`NE-${d.projectTasks().length}`);
     expect(created.dueAt).toBe(new Date('2026-10-20T12:00:00').getTime());
@@ -336,19 +336,23 @@ describe('subtasks', () => {
     expect(subs[2]?.id).toBeTruthy();
   });
 
-  it('gives a step an owner, and takes them off again', () => {
+  it('gives a step any number of owners, and clears them again', () => {
     const d = domain();
     const sub = d.findTask('t1')!.subs[0]!;
-    expect(sub.assigneeId ?? null).toBeNull();
+    expect(sub.assigneeIds).toEqual([]);
 
-    const r = d.assignSub('t1', sub.id, 'm4');
-    expect(r.message).toContain('Rahul');
-    expect(d.findTask('t1')!.subs[0]!.assigneeId).toBe('m4');
+    const r = d.setSubAssignees('t1', sub.id, ['m4', 'm5']);
+    expect(r.message).toContain('added');
+    expect(d.findTask('t1')!.subs[0]!.assigneeIds).toEqual(['m4', 'm5']);
 
-    // Assigning the same person again is a no-op, not an error.
-    expect(d.assignSub('t1', sub.id, 'm4').message).toContain('already');
-    expect(d.assignSub('t1', sub.id, null).message).toContain('unassigned');
-    expect(d.findTask('t1')!.subs[0]!.assigneeId).toBeNull();
+    // Adding one more leaves the others alone.
+    d.addSubAssignee('t1', sub.id, 'm2');
+    expect(d.findTask('t1')!.subs[0]!.assigneeIds).toEqual(['m4', 'm5', 'm2']);
+    expect(d.addSubAssignee('t1', sub.id, 'm2').message).toContain('already');
+
+    // Unticking everybody leaves the step open rather than half-owned.
+    d.setSubAssignees('t1', sub.id, []);
+    expect(d.findTask('t1')!.subs[0]!.assigneeIds).toEqual([]);
   });
 
   it('keys a step assignment by subtask id, not position', () => {
@@ -357,25 +361,28 @@ describe('subtasks', () => {
     const d = domain();
     const second = d.findTask('t1')!.subs[1]!;
     d.addSub('t1', 'A step added while the modal was open');
-    d.assignSub('t1', second.id, 'm4');
-    expect(d.findTask('t1')!.subs[1]!.assigneeId).toBe('m4');
-    expect(d.findTask('t1')!.subs[2]!.assigneeId ?? null).toBeNull();
+    d.setSubAssignees('t1', second.id, ['m4']);
+    expect(d.findTask('t1')!.subs[1]!.assigneeIds).toEqual(['m4']);
+    expect(d.findTask('t1')!.subs[2]!.assigneeIds).toEqual([]);
   });
 
-  it('refuses an unknown step or member', () => {
+  it('refuses an unknown step, and ignores ids that are not members', () => {
     const d = domain();
-    expect(d.assignSub('t1', 'not-a-step', 'm4').message).toContain('not found');
-    expect(d.assignSub('t1', d.findTask('t1')!.subs[0]!.id, 'not-a-member').message).toContain('not found');
+    expect(d.setSubAssignees('t1', 'not-a-step', ['m4']).message).toContain('not found');
+    d.setSubAssignees('t1', d.findTask('t1')!.subs[0]!.id, ['m4', 'not-a-member']);
+    expect(d.findTask('t1')!.subs[0]!.assigneeIds).toEqual(['m4']);
   });
 
-  it('lets anybody claim a step for themselves, and hand it back', () => {
+  it('lets anybody join a step, and step back off it', () => {
     const d = domain();
     const sub = d.findTask('t1')!.subs[0]!;
-    expect(d.toggleSubAssignee('t1', sub.id).message).toContain('Arjun');
-    expect(d.findTask('t1')!.subs[0]!.assigneeId).toBe('m1');
-    // The same click takes it off again rather than reassigning it.
-    expect(d.toggleSubAssignee('t1', sub.id).message).toContain('unassigned');
-    expect(d.findTask('t1')!.subs[0]!.assigneeId).toBeNull();
+    d.setSubAssignees('t1', sub.id, ['m4']);
+    // Joining does not displace whoever is already on the step.
+    expect(d.toggleSubAssignee('t1', sub.id).message).toContain('on');
+    expect(d.findTask('t1')!.subs[0]!.assigneeIds).toEqual(['m4', 'm1']);
+    // The same click takes you back off, leaving the other person.
+    expect(d.toggleSubAssignee('t1', sub.id).message).toContain('off');
+    expect(d.findTask('t1')!.subs[0]!.assigneeIds).toEqual(['m4']);
   });
 
   it('keeps step owners when the task description is edited', () => {
@@ -384,19 +391,20 @@ describe('subtasks', () => {
     // step assignment in the task.
     const d = domain();
     const kept = d.findTask('t1')!.subs[0]!;
-    d.assignSub('t1', kept.id, 'm4');
+    d.setSubAssignees('t1', kept.id, ['m4', 'm5']);
     d.replaceSubs('t1', ['Message list renders nearby users', 'Pull to refresh']);
     const after = d.findTask('t1')!.subs[0]!;
     expect(after.id).toBe(kept.id);
-    expect(after.assigneeId).toBe('m4');
+    expect(after.assigneeIds).toEqual(['m4', 'm5']);
   });
 
   it('drops a removed member’s steps back to unassigned', () => {
     const d = domain();
     const sub = d.findTask('t1')!.subs[0]!;
-    d.assignSub('t1', sub.id, 'm4');
+    d.setSubAssignees('t1', sub.id, ['m4', 'm5']);
     d.removeMember('m4');
-    expect(d.findTask('t1')!.subs[0]!.assigneeId ?? null).toBeNull();
+    // Only the removed member goes; the other keeps the step.
+    expect(d.findTask('t1')!.subs[0]!.assigneeIds).toEqual(['m5']);
   });
 
   it('records the hand-over in the audit trail', () => {
@@ -406,7 +414,7 @@ describe('subtasks', () => {
       onEvent: (e) => events.push({ action: e.action, summary: e.summary }),
     });
     const sub = d.findTask('t1')!.subs[0]!;
-    d.assignSub('t1', sub.id, 'm4');
+    d.setSubAssignees('t1', sub.id, ['m4']);
     expect(events.at(-1)?.action).toBe('subtask.assigned');
     expect(events.at(-1)?.summary).toContain('Rahul');
   });
@@ -669,7 +677,7 @@ describe('ids created in the app are Postgres-safe', () => {
     const task = (await d.createTask({
       title: 'From the composer',
       typeId: 'tt3',
-      assigneeId: null,
+      assigneeIds: [],
       due: null,
       priority: 'normal',
     }))!;
@@ -698,7 +706,7 @@ describe('custom task types', () => {
     const t = (await d.createTask({
       title: 'Investigate the crash',
       typeId: 'Spike',
-      assigneeId: null,
+      assigneeIds: [],
       due: null,
       priority: 'normal',
     }))!;
@@ -717,7 +725,7 @@ describe('creation writes are not left in the debounce window', () => {
     await d.createTask({
       title: 'Written straight away',
       typeId: 'tt3',
-      assigneeId: null,
+      assigneeIds: [],
       due: null,
       priority: 'normal',
     });

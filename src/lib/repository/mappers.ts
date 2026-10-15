@@ -106,15 +106,26 @@ export function taskAssigneeToRow(a: TaskAssigneeRow): Row {
 }
 
 export function subtaskFromRow(row: Row): Subtask {
-  const sub: Subtask = {
+  return {
     id: str(row.id),
     t: str(row.text),
     done: Boolean(row.done),
+    // Attached by `load()` from `subtask_assignees`. The legacy
+    // `subtasks.assignee_id` column survives the transition but is ignored
+    // here: two sources of truth for the same fact would drift.
+    assigneeIds: [],
   };
-  // Present from `0006_subtask_assignee.sql`; read defensively so a deployment
-  // that has not run it yet still loads.
-  if (row.assignee_id !== undefined) sub.assigneeId = strOrNull(row.assignee_id);
-  return sub;
+}
+
+/** One row of the subtask ⇄ member join table. */
+export interface SubtaskAssigneeRow {
+  subtaskId: string;
+  memberId: string;
+}
+
+export function subtaskAssigneeToRow(a: SubtaskAssigneeRow): Row {
+  // `assigned_at` and `assigned_by` are filled in by the database.
+  return { subtask_id: a.subtaskId, member_id: a.memberId };
 }
 
 /* -------------------------------- → row ---------------------------------- */
@@ -191,8 +202,7 @@ export function subtaskToRow(s: Subtask, taskId: string, position: number): Row 
     text: s.t,
     done: s.done,
     position,
-    // Who owns the step. `assigned_at` is deliberately absent: a trigger stamps
-    // it when this value changes, so the client never has to track it.
-    assignee_id: s.assigneeId ?? null,
+    // No `assignee_id`: the join table owns step assignment now. Omitting the
+    // column leaves the legacy value untouched instead of clobbering it.
   };
 }

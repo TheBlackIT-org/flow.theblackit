@@ -164,16 +164,19 @@ body.grabbing-grip { cursor: grabbing; }
    inside the button below and stretched it across the row. */
 .srow .stext { flex: 1; min-width: 0; }
 .srow.on .stext { color: var(--muted-2); }
-/* Who owns this step.
-   Always visible, dimmed until the row is hovered. Hiding it entirely (the way
-   the delete ✕ is hidden) left the whole step-assignment feature undiscoverable:
-   there was nothing on screen to say a step *could* have an owner. */
-.sassign { flex: none; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; color: var(--muted-2); border: 1px dashed var(--stroke); opacity: 0.45; transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
+/* Who is on this step: a pill of faces, or a placeholder that offers the
+   picker. Always visible (dimmed until hover) — hiding it entirely left the
+   feature undiscoverable: nothing on screen said a step could have an owner.
+   The faces size to the pill's *content* box: a 22px avatar inside a 22px
+   border-box button overflowed its own 20px interior and sat off-centre. */
+.sassign { flex: none; min-width: 22px; height: 22px; padding: 0 1px; border-radius: 20px; display: inline-flex; align-items: center; justify-content: center; color: var(--muted-2); border: 1px dashed var(--stroke); background: none; opacity: 0.45; transition: opacity 0.15s ease, border-color 0.15s ease, color 0.15s ease; }
 .srow:hover .sassign, .sassign.on { opacity: 1; }
-.sassign.on { border-style: solid; border-color: transparent; }
+.sassign.on { border-style: solid; border-color: transparent; padding: 0; }
 .sassign:hover { border-color: rgba(46, 230, 197, 0.55); color: var(--teal); }
 .sassign svg { width: 12px; height: 12px; }
-.sassign .av { width: 22px; height: 22px; font-size: 9.5px; }
+.sassign .avstack .av { width: 20px; height: 20px; font-size: 9px; margin-left: -6px; }
+.sassign .avstack .av:first-child { margin-left: 0; }
+.sassign .avmore { min-width: 18px; height: 20px; font-size: 9px; margin-left: -6px; }
 .sassign.mine { box-shadow: 0 0 0 2px rgba(46, 230, 197, 0.5); }
 .subadd { display: flex; gap: 7px; align-items: center; margin-top: 9px; }
 .subadd input { flex: 1; padding: 6px 9px; font-size: 12.5px; border-radius: 9px; }
@@ -587,6 +590,12 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 }
 .composer .fld span { font-size: 9.5px; }
 .composer .acts { margin-top: 12px; }
+/* Owners, plural, as toggles. The composer used to offer a single `<select>`,
+   which made it the one place that still assumed one owner per task. */
+.ownerchips { display: flex; flex-wrap: wrap; gap: 4px; }
+.ownertoggle { border: 1px solid var(--stroke); border-radius: 20px; padding: 3px 8px; font-size: 10.5px; color: var(--muted); background: rgba(255, 255, 255, 0.03); transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease; }
+.ownertoggle:hover { color: var(--ink); border-color: rgba(46, 230, 197, 0.4); }
+.ownertoggle.on { color: var(--teal); border-color: rgba(46, 230, 197, 0.55); background: rgba(46, 230, 197, 0.1); }
 @media (max-width: 900px) {
   .composer .fgrid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .composer .fld[style*="span 2"] { grid-column: span 2 !important; }

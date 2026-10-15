@@ -199,9 +199,9 @@ describe('composer', () => {
     await click($('[data-act="compose-end"]'));
     expect($('#newTitle')).not.toBeNull();
     ($('#newTitle') as HTMLInputElement).value = 'Write the launch email';
-    // The owner defaults to the acting member, so clear it to test the
+    // The owner chips default to the acting member, so untick to test the
     // "not taken" path explicitly.
-    change($('#newOwner'), '');
+    await click($('.ownerchips .ownertoggle.on'));
     await click($('[data-act="create"]'));
     expect($('#newTitle')).toBeNull();
     const last = $$('.row[data-task]').at(-1)!;
@@ -214,7 +214,8 @@ describe('composer', () => {
 
   it('pre-selects the acting member as owner, matching the prototype', async () => {
     await click($('[data-act="compose-end"]'));
-    expect(($('#newOwner') as HTMLSelectElement).value).toBe('m1');
+    // Parity with the prototype: the acting member starts ticked.
+    expect($$('.ownerchips .ownertoggle.on').map((b) => b.dataset.owner)).toEqual(['m1']);
     ($('#newTitle') as HTMLInputElement).value = 'Assigned by default';
     await click($('[data-act="create"]'));
     const created = app.domain.workspace.tasks.find((t) => t.title === 'Assigned by default')!;
@@ -319,35 +320,52 @@ describe('subtasks', () => {
     expect(app.domain.findTask('t1')?.subs.at(-1)?.t).toBe('Typed then entered');
   });
 
-  it('hands a step to somebody else from the step picker', async () => {
+  it('puts two people on one step from the step picker', async () => {
     await click($('.row[data-task="t1"] .subtoggle'));
     const sub = app.domain.findTask('t1')!.subs[0]!;
-    expect(sub.assigneeId ?? null).toBeNull();
-    // An unassigned step shows the muted "assign" affordance, not a face.
+    expect(sub.assigneeIds).toEqual([]);
+    // An unclaimed step shows the placeholder, not faces.
     expect($('.row[data-task="t1"] .sassign.on')).toBeNull();
 
     await click($('.row[data-task="t1"] .sassign'));
     expect($('#modal').classList.contains('on')).toBe(true);
-    // "Nobody" is a real option, and it starts selected.
-    expect($('#modal').textContent).toContain('Nobody');
+    // Checkboxes, exactly like the task assign modal: several people per step.
+    expect($$('#modal input[type="checkbox"][name^="member:"]').length).toBe(
+      app.domain.workspace.members.length,
+    );
 
-    ($('#modal input[type="radio"][value="m5"]') as El).checked = true;
+    ($('#modal [name="member:m5"]') as El).checked = true;
+    ($('#modal [name="member:m3"]') as El).checked = true;
     await click($('#modal [data-act="submit-modal"]'));
 
-    expect(app.domain.findTask('t1')!.subs[0]!.assigneeId).toBe('m5');
-    // The row now carries the owner's face rather than the placeholder.
+    // Order follows the member list, not the tick order: a batch shares one
+    // `assigned_at`, so the faces' order is cosmetic.
+    expect(app.domain.findTask('t1')!.subs[0]!.assigneeIds).toEqual(['m3', 'm5']);
+    // The row carries their faces rather than the placeholder.
     expect($('.row[data-task="t1"] .sassign.on')).not.toBeNull();
-    expect($('.row[data-task="t1"] .sassign .av').textContent).toBe('MS');
+    expect($$('.row[data-task="t1"] .sassign .av').length).toBe(2);
   });
 
-  it('claims a step for yourself from the picker footer', async () => {
+  it('takes one person off a step without disturbing the other', async () => {
+    await click($('.row[data-task="t1"] .subtoggle'));
+    const sub = app.domain.findTask('t1')!.subs[0]!;
+    app.domain.setSubAssignees('t1', sub.id, ['m3', 'm5']);
+
+    await click($('.row[data-task="t1"] .sassign'));
+    ($('#modal [name="member:m5"]') as El).checked = false;
+    await click($('#modal [data-act="submit-modal"]'));
+
+    expect(app.domain.findTask('t1')!.subs[0]!.assigneeIds).toEqual(['m3']);
+  });
+
+  it('joins a step yourself from the picker footer', async () => {
     await click($('.row[data-task="t1"] .subtoggle'));
     app.domain.workspace.me = 'm1';
 
     await click($('.row[data-task="t1"] .sassign'));
     await click($('#modal [data-act="sub-assign-me"]'));
 
-    expect(app.domain.findTask('t1')!.subs[0]!.assigneeId).toBe('m1');
+    expect(app.domain.findTask('t1')!.subs[0]!.assigneeIds).toEqual(['m1']);
     // The footer action closes the modal: its list is stale the moment it acts.
     expect($('#modal').classList.contains('on')).toBe(false);
   });
@@ -357,13 +375,13 @@ describe('subtasks', () => {
     // text alone silently dropped the owners.
     await click($('.row[data-task="t1"] .subtoggle'));
     const sub = app.domain.findTask('t1')!.subs[0]!;
-    app.domain.assignSub('t1', sub.id, 'm4');
+    app.domain.setSubAssignees('t1', sub.id, ['m4', 'm5']);
 
     await click($('.row[data-task="t1"] .kebab'));
     await click($('.row[data-task="t1"] [data-act="edit"]'));
     await click($('#modal [data-act="submit-modal"]'));
 
-    expect(app.domain.findTask('t1')!.subs[0]!.assigneeId).toBe('m4');
+    expect(app.domain.findTask('t1')!.subs[0]!.assigneeIds).toEqual(['m4', 'm5']);
   });
 });
 

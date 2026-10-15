@@ -53,6 +53,8 @@ export function applyChange(ws: Workspace, change: RowChange, ctx: ApplyContext)
       return applySubtask(ws, change);
     case 'task_assignees':
       return applyTaskAssignee(ws, change);
+    case 'subtask_assignees':
+      return applySubtaskAssignee(ws, change);
     case 'projects':
       return applyProject(ws, change);
     case 'members':
@@ -163,9 +165,42 @@ function applySubtask(ws: Workspace, change: RowChange): ApplyResult {
   }
 
   const sub = subtaskFromRow(change.row);
-  if (index < 0) task.subs.push(sub);
-  else task.subs[index] = sub;
+  if (index < 0) {
+    // A genuinely new step: nobody is on it yet.
+    task.subs.push(sub);
+  } else {
+    // Step owners live in the join table, so this row arrives with an empty
+    // list. Overwriting from it would empty the step on every remote edit.
+    sub.assigneeIds = task.subs[index]!.assigneeIds;
+    task.subs[index] = sub;
+  }
   return CHANGED;
+}
+
+/* --------------------------- subtask assignees ---------------------------- */
+
+/** One person joining or leaving a subtask step. */
+function applySubtaskAssignee(ws: Workspace, change: RowChange): ApplyResult {
+  const subtaskId = str(change.row?.subtask_id ?? change.old?.subtask_id);
+  const memberId = str(change.row?.member_id ?? change.old?.member_id);
+  if (!subtaskId || !memberId) return NOTHING;
+
+  for (const task of ws.tasks) {
+    const sub = task.subs.find((s) => s.id === subtaskId);
+    if (!sub) continue;
+    const present = sub.assigneeIds.includes(memberId);
+    if (change.type === 'DELETE') {
+      if (!present) return NOTHING;
+      sub.assigneeIds = sub.assigneeIds.filter((id) => id !== memberId);
+      return CHANGED;
+    }
+    if (present) return NOTHING;
+    // Appended rather than prepended, matching what `load()` does with
+    // `assigned_at` so the two agree on who is first.
+    sub.assigneeIds.push(memberId);
+    return CHANGED;
+  }
+  return NOTHING;
 }
 
 /* ----------------------------- task assignees ----------------------------- */

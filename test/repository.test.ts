@@ -160,7 +160,7 @@ describe('applyChange', () => {
 
   it('preserves locally held subtasks and the expanded flag', () => {
     const target = ws.tasks[0]!;
-    target.subs = [{ id: 's-local', t: 'Typed just now', done: false }];
+    target.subs = [{ id: 's-local', t: 'Typed just now', done: false, assigneeIds: [] }];
     target.open = true;
     const change: RowChange = {
       table: 'tasks',
@@ -170,7 +170,7 @@ describe('applyChange', () => {
     applyChange(ws, change, ctx);
     const after = ws.tasks.find((t) => t.id === target.id)!;
     expect(after.title).toBe('Renamed elsewhere');
-    expect(after.subs).toEqual([{ id: 's-local', t: 'Typed just now', done: false }]);
+    expect(after.subs).toEqual([{ id: 's-local', t: 'Typed just now', done: false, assigneeIds: [] }]);
     expect(after.open).toBe(true);
   });
 
@@ -324,7 +324,7 @@ describe('applyChange', () => {
       ctx,
     );
     expect(result.changed).toBe(true);
-    expect(task.subs.at(-1)).toEqual({ id: 's-new', t: 'From Nithin', done: false });
+    expect(task.subs.at(-1)).toEqual({ id: 's-new', t: 'From Nithin', done: false, assigneeIds: [] });
   });
 
   it('drops a removed member and frees their tasks', () => {
@@ -359,7 +359,7 @@ describe('domain persistence hook', () => {
   it('reserves keys through the injected resolver', async () => {
     const nextKey = vi.fn(async () => 'NE-999');
     const d = new FlowDomain(seed(NOW), { storage: memoryStorage(), nextKey });
-    const t = await d.createTask({ title: 'Server-keyed', typeId: 'tt3', assigneeId: null, due: null, priority: 'normal' });
+    const t = await d.createTask({ title: 'Server-keyed', typeId: 'tt3', assigneeIds: [], due: null, priority: 'normal' });
     expect(nextKey).toHaveBeenCalled();
     expect(t?.key).toBe('NE-999');
   });

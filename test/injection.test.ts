@@ -44,7 +44,7 @@ function poisoned(): FlowDomain {
     t.title = `${PAYLOAD}${i}`;
     t.description = QUOTE_BREAK;
     t.stage = SCRIPT;
-    t.subs = [{ id: `s-${i}`, t: PAYLOAD, done: false }];
+    t.subs = [{ id: `s-${i}`, t: PAYLOAD, done: false, assigneeIds: [] }];
   });
   return d;
 }
@@ -155,7 +155,7 @@ describe('hostile account data stays inert', () => {
     // Unassigned first, then with a hostile member on the step: the row draws
     // their initials and their name in a title attribute.
     expectInert(subAssignBody(d, t, t.subs[0]!), 'step picker');
-    t.subs[0]!.assigneeId = d.workspace.members[0]!.id;
+    t.subs[0]!.assigneeIds = [d.workspace.members[0]!.id];
     expectInert(renderChain(d), 'card with an assigned step');
     expectInert(subAssignBody(d, t, t.subs[0]!), 'step picker with an owner');
   });

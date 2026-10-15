@@ -26,6 +26,7 @@ import {
   projectToRow,
   str,
   strOrNull,
+  subtaskAssigneeToRow,
   subtaskFromRow,
   subtaskToRow,
   taskAssigneeToRow,
@@ -54,6 +55,7 @@ const SYNCED_TABLES = [
   'projects',
   'members',
   'task_assignees',
+  'subtask_assignees',
   'activity',
   'notifications',
 ] as const;
@@ -284,15 +286,17 @@ export class SupabaseRepository implements WorkspaceRepository {
     const id = await this.ensureWorkspaceId();
     if (!id) return null;
 
-    const [members, projects, tasks, subtasks, assignees] = await Promise.all([
+    const [members, projects, tasks, subtasks, assignees, stepAssignees] = await Promise.all([
       this.client.from('members').select('*').eq('workspace_id', id),
       this.client.from('projects').select('*').eq('workspace_id', id),
       this.client.from('tasks').select('*').order('position', { ascending: true }),
       this.client.from('subtasks').select('*').order('position', { ascending: true }),
       this.client.from('task_assignees').select('*'),
+      this.client.from('subtask_assignees').select('*'),
     ]);
 
-    const firstError = [members, projects, tasks, subtasks, assignees].find((r) => r.error)?.error;
+    const firstError = [members, projects, tasks, subtasks, assignees, stepAssignees].find((r) => r.error)
+      ?.error;
     if (firstError) throw new Error(`Could not read the workspace: ${firstError.message}`);
 
     const memberRows = (members.data ?? []) as Row[];
@@ -300,6 +304,7 @@ export class SupabaseRepository implements WorkspaceRepository {
     const taskRows = (tasks.data ?? []) as Row[];
     const subtaskRows = (subtasks.data ?? []) as Row[];
     const assigneeRows = (assignees.data ?? []) as Row[];
+    const stepAssigneeRows = (stepAssignees.data ?? []) as Row[];
 
     // The workspace is genuinely empty: create it and return what we seeded.
     void id;
@@ -307,6 +312,7 @@ export class SupabaseRepository implements WorkspaceRepository {
     const scopedTasks = taskRows.filter((t) => projectIds.has(str(t.project_id)));
     const taskIds = new Set(scopedTasks.map((t) => str(t.id)));
 
+    const subTaskIds = new Set<string>();
     const byTask = new Map<string, Subtask[]>();
     subtaskRows
       .filter((s) => taskIds.has(str(s.task_id)))
@@ -314,6 +320,7 @@ export class SupabaseRepository implements WorkspaceRepository {
         const list = byTask.get(str(s.task_id)) ?? [];
         list.push(subtaskFromRow(s));
         byTask.set(str(s.task_id), list);
+        subTaskIds.add(str(s.id));
       });
 
     // Assignment is a join table: a task's people are every row naming it, and
@@ -334,9 +341,23 @@ export class SupabaseRepository implements WorkspaceRepository {
     // array order per project: if the stored positions disagreed with the sort
     // order — legacy rows, or several clients writing at once — a drag would
     // otherwise compare equal and never be persisted.
+    // Step owners, keyed by subtask and ordered by when they were added, so
+    // the first person put on a step stays first in the stack.
+    const bySubAssignee = new Map<string, Array<{ memberId: string; at: number }>>();
+    stepAssigneeRows
+      .filter((a) => subTaskIds.has(str(a.subtask_id)))
+      .forEach((a) => {
+        const list = bySubAssignee.get(str(a.subtask_id)) ?? [];
+        list.push({ memberId: str(a.member_id), at: ms(a.assigned_at) ?? 0 });
+        bySubAssignee.set(str(a.subtask_id), list);
+      });
+
     const tasksOut: Task[] = scopedTasks.map((row) => {
       const task = taskFromRow(row);
       task.subs = byTask.get(task.id) ?? [];
+      task.subs.forEach((sub) => {
+        sub.assigneeIds = (bySubAssignee.get(sub.id) ?? []).sort((a, b) => a.at - b.at).map((a) => a.memberId);
+      });
       task.assigneeIds = (byTaskAssignees.get(task.id) ?? [])
         .sort((a, b) => a.at - b.at)
         .map((a) => a.memberId);
@@ -496,6 +517,45 @@ export class SupabaseRepository implements WorkspaceRepository {
       await this.assert(
         'task_assignees',
         this.client.from('task_assignees').delete().eq('task_id', taskId).in('member_id', memberIds),
+      );
+    }
+
+    /* ---- subtask ⇄ member assignment ---- */
+    // Same shape as the task-level diff above: membership rows are only ever
+    // added or removed, never merged.
+    const stepKey = (subId: string, memberId: string) => `${subId}|${memberId}`;
+    const prevStepKeys = new Set(
+      (prev?.tasks ?? []).flatMap((t) =>
+        t.subs.flatMap((s) => (s.assigneeIds ?? []).map((m) => stepKey(s.id, m))),
+      ),
+    );
+    const nextStepKeys = new Set(
+      ws.tasks.flatMap((t) => t.subs.flatMap((s) => (s.assigneeIds ?? []).map((m) => stepKey(s.id, m)))),
+    );
+
+    const addedStepAssignees = ws.tasks.flatMap((t) =>
+      t.subs.flatMap((s) =>
+        (s.assigneeIds ?? [])
+          .filter((m) => !prevStepKeys.has(stepKey(s.id, m)))
+          .map((m) => ({ ...subtaskAssigneeToRow({ subtaskId: s.id, memberId: m }), ...tag })),
+      ),
+    );
+    if (addedStepAssignees.length) {
+      await this.assert('subtask_assignees', this.client.from('subtask_assignees').upsert(addedStepAssignees));
+    }
+
+    const stepRemovals = new Map<string, string[]>();
+    (prev?.tasks ?? []).forEach((t) => {
+      t.subs.forEach((s) => {
+        const gone = (s.assigneeIds ?? []).filter((m) => !nextStepKeys.has(stepKey(s.id, m)));
+        // If the step itself is gone the foreign key cascade already cleared it.
+        if (gone.length && nextSubs.has(s.id)) stepRemovals.set(s.id, gone);
+      });
+    });
+    for (const [subId, memberIds] of stepRemovals) {
+      await this.assert(
+        'subtask_assignees',
+        this.client.from('subtask_assignees').delete().eq('subtask_id', subId).in('member_id', memberIds),
       );
     }
 

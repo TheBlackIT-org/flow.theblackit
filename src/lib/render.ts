@@ -353,31 +353,25 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
     (t.subs.length
       ? t.subs
           .map((s, ix) => {
-            const owner = domain.member(s.assigneeId ?? null);
-            const mine = Boolean(s.assigneeId) && s.assigneeId === domain.workspace.me;
+            const owners = s.assigneeIds
+              .map((id) => domain.member(id))
+              .filter((m): m is NonNullable<ReturnType<FlowDomain['member']>> => Boolean(m));
+            const mine = s.assigneeIds.includes(domain.workspace.me ?? '');
             return (
               `<div class="srow${s.done ? ' on' : ''}">` +
               `<button class="sbox${s.done ? ' on' : ''}" data-act="sub" data-id="${esc(t.id)}" data-idx="${esc(ix)}">${
                 s.done ? ICON.check : ''
               }</button>` +
               `<span class="stext">${esc(s.t)}</span>` +
-              // One control for both states: it shows whose step it is when it
-              // is somebody's, and offers the picker when it is nobody's.
-              `<button class="sassign${owner ? ' on' : ''}${mine ? ' mine' : ''}" data-act="sub-assign" data-id="${esc(
+              // One control for both states: the faces of whoever is on the
+              // step, or a placeholder that offers the picker when nobody is.
+              `<button class="sassign${owners.length ? ' on' : ''}${mine ? ' mine' : ''}" data-act="sub-assign" data-id="${esc(
                 t.id,
               )}" data-sub="${esc(s.id)}" title="${
-                owner ? `Assigned to ${esc(owner.name)} · click to change` : 'Assign this step'
-              }">${
-                owner
-                  ? `<span class="av" style="background:${domain.colorFor(owner.id)}">${esc(
-                      owner.name
-                        .split(' ')
-                        .map((w) => w[0] ?? '')
-                        .slice(0, 2)
-                        .join(''),
-                    )}</span>`
-                  : ICON.person
-              }</button>` +
+                owners.length
+                  ? `${esc(owners.map((m) => m.name).join(', '))} · click to change`
+                  : 'Assign this step'
+              }">${owners.length ? avatarStack(domain, s.assigneeIds, 2) : ICON.person}</button>` +
               `<button class="sdel" data-act="sub-del" data-id="${esc(t.id)}" data-idx="${esc(ix)}" title="Delete this subtask">✕</button></div>`
             );
           })
@@ -417,15 +411,21 @@ export function composerRow(domain: FlowDomain, index: number): string {
       .join('')}<option value="__custom">Other…</option></select>` +
     '<input type="text" id="newTypeCustom" class="typefree" placeholder="Type your own" hidden />' +
     '</div>' +
-    '<div class="fld"><span>Owner</span><select id="newOwner">' +
-    '<option value="">Not taken · open pool</option>' +
-    domain.workspace.members
-      .map(
-        (x) =>
-          `<option value="${esc(x.id)}" ${x.id === domain.workspace.me ? 'selected' : ''}>${esc(x.name)}</option>`,
-      )
-      .join('') +
-    '</select></div>' +
+    // Owners, plural, ticked. A single `<select>` here was the last place that
+    // still assumed one owner per task, so creating shared work meant creating
+    // it and then reopening the card.
+    '<div class="fld"><span>Owners · optional</span><div class="ownerchips">' +
+    (domain.workspace.members.length
+      ? domain.workspace.members
+          .map(
+            (x) =>
+              `<button type="button" class="ownertoggle${x.id === domain.workspace.me ? ' on' : ''}" data-act="ownertoggle" data-owner="${esc(
+                x.id,
+              )}">${esc(x.name)}</button>`,
+          )
+          .join('')
+      : '<span class="taken" style="border:0;padding:0">Nobody in the team yet</span>') +
+    '</div></div>' +
     '<div class="fld"><span>Due date</span><input type="date" id="newDue" /></div>' +
     `<div class="fld"><span>Priority</span><select id="newPrio">${PRIO.map(
       (p) => `<option value="${esc(p.id)}"${p.id === 'normal' ? ' selected' : ''}>${p.label}</option>`,
@@ -725,35 +725,31 @@ export function reassignBody(domain: FlowDomain, t: Task): string {
 }
 
 /**
- * Who owns one subtask step.
+ * Who is on one subtask step.
  *
- * A radio group rather than checkboxes: a subtask is a single action, so
- * sharing it would mean nothing. "Nobody" is a real option — an unassigned step
- * is the normal state, not a gap to be filled.
+ * Checkboxes, like the task assign modal: several people can be on a step, and
+ * "nobody" is simply none of them ticked rather than a separate option.
  */
 export function subAssignBody(domain: FlowDomain, t: Task, sub: Subtask): string {
   const me = domain.workspace.me;
-  const options = [
-    `<label class="assignrow${!sub.assigneeId ? ' on' : ''}">` +
-      `<input type="radio" name="subOwner" value=""${!sub.assigneeId ? ' checked' : ''} />` +
-      '<span class="assignname"><div>Nobody</div><div>Leave this step unassigned</div></span>' +
-      '</label>',
-    ...domain.workspace.members.map((m) => {
-      const on = sub.assigneeId === m.id;
+  const rows = domain.workspace.members
+    .map((m) => {
+      const on = sub.assigneeIds.includes(m.id);
       return (
         `<label class="assignrow${on ? ' on' : ''}">` +
-        `<input type="radio" name="subOwner" value="${esc(m.id)}"${on ? ' checked' : ''} />` +
+        `<input type="checkbox" name="member:${esc(m.id)}" value="${esc(m.id)}"${on ? ' checked' : ''} />` +
         avatar(domain, m.id) +
         `<span class="assignname"><div>${esc(m.name)}${
           m.id === me ? ' <span class="you">you</span>' : ''
         }</div><div>${esc(m.title || m.role)}</div></span>` +
         '</label>'
       );
-    }),
-  ].join('');
+    })
+    .join('');
   return (
     `<div class="subhead">${esc(t.key)} · ${esc(sub.t)}</div>` +
-    `<div class="assignlist">${options}</div>`
+    `<div class="assignlist">${rows || '<div class="subempty">Nobody to assign yet.</div>'}</div>` +
+    '<div class="hint" style="margin:12px 0 0">Tick everybody who is on this step, or nobody to leave it open. Steps take several people just like tasks do.</div>'
   );
 }
 

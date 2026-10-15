@@ -516,6 +516,10 @@ export class BlackitFlowApp {
       },
       formData: () => self.formData(),
       value: (selector) => self.value(selector),
+      ownerIds: () =>
+        Array.from(document.querySelectorAll<HTMLElement>('.ownerchips .ownertoggle.on'))
+          .map((el) => el.dataset.owner ?? '')
+          .filter(Boolean),
       toggleWorkspaceMenu: () => {
         document.querySelector('[data-pop="ws"]')?.classList.toggle('on');
       },

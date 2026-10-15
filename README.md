@@ -20,7 +20,7 @@ npm run dev        # http://localhost:4321
 | `npm run build` | Static build into `dist/` |
 | `npm run preview` | Serve the built `dist/` |
 | `npm run check` | `astro check` + `tsc` over the tests |
-| `npm test` | Vitest (401 tests) |
+| `npm test` | Vitest (406 tests) |
 | `npm run verify` | check + test + build |
 | `npm run watch:schema` | waits for the shared schema to appear, then runs `check:supabase` automatically |
 | `npm run check:two-clients` | live proof of instant push: one client writes, a second receives it over Realtime |
@@ -140,6 +140,7 @@ whole upsert when a column is unknown. Additive first, then deploy.
 | 1b | Apply `0005_task_assignees.sql` | Additive; old client unaffected |
 | 1c | Apply `0006_subtask_assignee.sql` | Additive; old client unaffected |
 | 1d | Apply `0007_notifications.sql` | Additive; triggers fire for the old client too |
+| 1e | Apply `0008_subtask_assignees.sql` | Additive; supersedes the one-owner step column |
 | 2 | Set `PUBLIC_REQUIRE_LOGIN=true` and deploy | The board now needs a session |
 | 3 | Everyone signs in and is bound (existing team: the name picker; new team: the wizard, then email invites) | Confirm nobody is locked out |
 | 4 | Apply `0004_tighten_rls.sql` | Replaces the permissive `anon` policies |
@@ -181,11 +182,12 @@ workspaces ─┬─ members   (the "Acting as" list; email = invite, user_id = 
                                    └─ activity (append-only trail)
 ```
 
-Assignment is a join table rather than a column because a task can have several
-people on it. `tasks.assignee_id` still exists for the transition — see
-`0005_task_assignees.sql` — but the client ignores it, and a trigger keeps the
-old column and the join table in step so a tab still running the previous build
-does not lose anybody's work.
+Assignment is a join table rather than a column because both a task *and a
+step* can have several people on them. `tasks.assignee_id` and
+`subtasks.assignee_id` still exist for the transition — see
+`0005_task_assignees.sql` and `0008_subtask_assignees.sql` — but the client
+ignores both, and triggers keep the old columns and the join tables in step so a
+tab still running the previous build does not lose anybody's work.
 
 Task keys (`NE-1`, `NE-2`) come from `next_task_key(project_id)`, a Postgres
 function that reserves the number atomically, so two people creating a task at
@@ -254,10 +256,11 @@ all, so a client cannot manufacture a notification even for itself.
   disturbing them. An empty list is the open pool, and anyone can
   **Take this task**.
 - **Subtasks, with owners.** Any member can tick, add or delete steps; the chip
-  shows progress. Any step can be handed to one person — the row shows their
-  face, the picker has *Assign to me* in its footer, and a step without an owner
-  is the normal state rather than a gap. A task's people and a step's owner are
-  separate: sharing happens at the task, a step is one person's action.
+  shows progress. A step takes **several** people, exactly like a task does —
+  the row shows their faces (and `+N` past two), the picker is a tick per member
+  with *Assign to me* in its footer, and a step with nobody on it is normal
+  rather than a gap. Pairing on one step is a real way to work, so a step has no
+  more reason to be exclusive than the task holding it.
 - **A bell that tells you when work lands on you.** Being put on a task, handed
   a step, or having a task you are on go Blocked / In Review / Done lands in the
   header bell, live over Realtime, with an unread count. Clicking an entry jumps
@@ -322,6 +325,7 @@ supabase/migrations/
   0005_task_assignees.sql    the join table + backfill + the stale-tab bridge
   0006_subtask_assignee.sql  a step can be somebody's (one person, not many)
   0007_notifications.sql     the bell: table + the triggers that fill it
+  0008_subtask_assignees.sql  several people per step + the stale-tab bridge
 test/
   domain.test.ts           rules: claim, cycle, ordering, assistant, storage
   app.test.ts              real DOM (happy-dom): clicks, modals, wizard, chat

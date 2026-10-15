@@ -67,6 +67,8 @@ export interface FlowActionsContext {
   formData(): Record<string, string>;
   /** Read a value by element id, or '' when absent. */
   value(id: string): string;
+  /** The members ticked in the composer's owner chips. */
+  ownerIds(): string[];
   /** Show the workspace menu popover, or toggle it. */
   toggleWorkspaceMenu(): void;
   /** Download the workspace as JSON. */
@@ -252,7 +254,12 @@ export class FlowActions {
           subAssignBody(domain, t, sub),
           subAssignFooter(t, sub),
           (d) => {
-            const r = domain.assignSub(t.id, sub.id, d.subOwner || null);
+            // Same checkbox convention as the task modal: only ticked members
+            // are in `formData()`, and none ticked means nobody is on the step.
+            const memberIds = Object.keys(d)
+              .filter((key) => key.startsWith('member:'))
+              .map((key) => d[key] ?? '');
+            const r = domain.setSubAssignees(t.id, sub.id, memberIds);
             this.refresh();
             this.ctx.toast(r.message);
             return true;
@@ -313,6 +320,12 @@ export class FlowActions {
         this.ctx.focus('#newTitle');
         break;
 
+      case 'ownertoggle':
+        // The chips are the composer's owner field; ticking one adds an owner
+        // without disturbing the others.
+        element.classList.toggle('on');
+        break;
+
       case 'compose-end':
         domain.workspace.composer = 1;
         domain.workspace.composerAnchor = null;
@@ -346,7 +359,7 @@ export class FlowActions {
         const created = await domain.createTask({
           title,
           typeId: pickedType === '__custom' ? customType : pickedType,
-          assigneeId: this.ctx.value('#newOwner') || null,
+          assigneeIds: this.ctx.ownerIds(),
           due: this.ctx.value('#newDue') || null,
           priority: (this.ctx.value('#newPrio') || 'normal') as PriorityId,
           desc: this.ctx.value('#newDesc'),

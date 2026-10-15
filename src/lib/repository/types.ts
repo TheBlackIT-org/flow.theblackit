@@ -25,6 +25,7 @@ export interface RowChange {
     | 'members'
     | 'activity'
     | 'task_assignees'
+    | 'subtask_assignees'
     | 'notifications';
   type: 'INSERT' | 'UPDATE' | 'DELETE';
   /** Row payload (for DELETE, the primary key fields). */

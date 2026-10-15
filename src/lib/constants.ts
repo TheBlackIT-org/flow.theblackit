@@ -90,6 +90,7 @@ export const ACTIONS = [
   'menu',
   'insert',
   'compose-end',
+  'ownertoggle',
   'cancel-compose',
   'create',
   'wsmenu',

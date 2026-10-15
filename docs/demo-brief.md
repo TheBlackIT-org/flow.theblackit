@@ -20,10 +20,11 @@ order. All three are additive, so the live board keeps working while you do it.
 | 1 | `supabase/migrations/0005_task_assignees.sql` | several assignees per task |
 | 2 | `supabase/migrations/0006_subtask_assignee.sql` | an owner per subtask step |
 | 3 | `supabase/migrations/0007_notifications.sql` | the bell + the triggers that fill it |
+| 4 | `supabase/migrations/0008_subtask_assignees.sql` | several people per subtask step |
 
 Then:
 
-4. **Invite the remaining people** — Team → name + email. Anybody the demo will
+5. **Invite the remaining people** — Team → name + email. Anybody the demo will
    sign in as needs their email on their member row.
 5. **Everybody reloads.** A tab still running the old build keeps working, but
    its assignment writes are only visible to the new client through the
@@ -95,14 +96,17 @@ first pulled it out of the pool.
    a muted person icon means nobody has it.
 2. Click it → the picker quotes the step at the top, lists everyone, and starts
    on **Nobody**. Choose somebody, Save → their face appears on the row.
-3. Re-open the picker and use **Assign to me** in the footer → the step becomes
-   yours, and the modal closes.
-4. Edit the task (**⋯ → Edit task**) and save without changing the steps: the
+3. Tick **two** people on one step and Save → the row shows both faces; tick a
+   third somewhere and the pill counts the overflow.
+4. Re-open the picker and use **Assign to me** in the footer → you join the step
+   without displacing anybody, and the modal closes.
+5. Edit the task (**⋯ → Edit task**) and save without changing the steps: the
    step owners survive.
 
-**What to say:** a task is where work is shared; a step is one person's action.
-Point 4 is the bug this could have shipped with — editing a description used to
-wipe every step owner silently.
+**What to say:** a step takes several people for the same reason a task does —
+pairing on one step is a real way to work. The last point is the bug this could
+have shipped with: editing a description used to wipe every step owner
+silently.
 
 ### 4. The bell
 

@@ -192,7 +192,7 @@ describe('load', () => {
     });
     const loaded = (await repo(fake).load())!;
     const task = loaded.tasks.find((t) => t.id === first.id)!;
-    expect(task.subs).toEqual([{ id: uuidFor('s-1'), t: 'A step', done: true }]);
+    expect(task.subs).toEqual([{ id: uuidFor('s-1'), t: 'A step', done: true, assigneeIds: [] }]);
   });
 
   it('surfaces a read failure instead of pretending the workspace is empty', async () => {
@@ -240,7 +240,7 @@ describe('flush — diffing', () => {
   it('tags every write with the mutation id so the echo can be ignored', async () => {
     const { fake, repository, loaded } = await primed();
     loaded.tasks[0]!.title = 'Renamed';
-    loaded.tasks[0]!.subs = [{ id: 's-new', t: 'Step', done: false }];
+    loaded.tasks[0]!.subs = [{ id: 's-new', t: 'Step', done: false, assigneeIds: [] }];
     loaded.members[0]!.title = 'Chief';
     loaded.projects[0]!.name = 'Renamed project';
 
@@ -277,8 +277,8 @@ describe('flush — diffing', () => {
     const keepId = uuidFor('s-a');
     const removeId = uuidFor('s-b');
     ws.tasks[0]!.subs = [
-      { id: keepId, t: 'Keep', done: false },
-      { id: removeId, t: 'Remove', done: false },
+      { id: keepId, t: 'Keep', done: false, assigneeIds: [] },
+      { id: removeId, t: 'Remove', done: false, assigneeIds: [] },
     ];
     const { fake, repository, loaded } = await primed(ws);
     // The subtasks arrive from the server nested under their task.
@@ -394,6 +394,7 @@ describe('subscribe', () => {
       'members',
       'notifications',
       'projects',
+      'subtask_assignees',
       'subtasks',
       'task_assignees',
       'tasks',
@@ -938,20 +939,54 @@ describe('assignment is a join table', () => {
     }
   });
 
-  it('carries a step owner on the subtask row', async () => {
+  it('writes step owners to their own table, not the subtask row', async () => {
     const { fake, repository, loaded } = await primed();
     const task = loaded.tasks.find((t) => t.subs.length)!;
     const sub = task.subs[0]!;
-    const owner = loaded.members[3]!.id;
-    sub.assigneeId = owner;
+    sub.assigneeIds = [loaded.members[3]!.id, loaded.members[4]!.id];
 
     await repository.flush(loaded, 'mut-step');
 
+    const written = (writesTo(fake, 'subtask_assignees', 'upsert') as Array<
+      Array<Record<string, unknown>>
+    >).flat();
+    expect(written).toEqual([
+      { subtask_id: sub.id, member_id: loaded.members[3]!.id, mutation_id: 'mut-step' },
+      { subtask_id: sub.id, member_id: loaded.members[4]!.id, mutation_id: 'mut-step' },
+    ]);
+
+    // The subtask row must not carry the legacy column: the join table owns
+    // step assignment now, and writing both would let them drift.
     const rows = (writesTo(fake, 'subtasks', 'upsert') as Array<Array<Record<string, unknown>>>).flat();
-    const row = rows.find((r) => r.id === sub.id)!;
-    expect(row.assignee_id).toBe(owner);
-    // `assigned_at` is the trigger's job, so the client must not send one.
-    expect(row).not.toHaveProperty('assigned_at');
+    const row = rows.find((r) => r.id === sub.id);
+    if (row) expect(row).not.toHaveProperty('assignee_id');
+  });
+
+  it('reads step owners back, oldest first', async () => {
+    const { loaded } = await primed();
+    const task = loaded.tasks.find((t) => t.subs.length)!;
+    const sub = task.subs[0]!;
+    expect(Array.isArray(sub.assigneeIds)).toBe(true);
+  });
+
+  it('removes a step owner scoped to their step', async () => {
+    const { fake, repository, loaded } = await primed();
+    const task = loaded.tasks.find((t) => t.subs.length)!;
+    const sub = task.subs[0]!;
+    sub.assigneeIds = [loaded.members[3]!.id, loaded.members[4]!.id];
+    await repository.flush(loaded, 'mut-step-add');
+
+    sub.assigneeIds = [loaded.members[4]!.id];
+    await repository.flush(loaded, 'mut-step-drop');
+
+    const removed = fake.calls.filter(
+      (c) => c.table === 'subtask_assignees' && c.method === 'delete',
+    );
+    expect(removed).toHaveLength(1);
+    expect(removed[0]!.filters).toEqual([
+      { op: 'eq', column: 'subtask_id', value: sub.id },
+      { op: 'in', column: 'member_id', value: [loaded.members[3]!.id] },
+    ]);
   });
 
   it('does not touch the database when assignment is unchanged', async () => {

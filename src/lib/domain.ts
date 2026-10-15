@@ -423,7 +423,7 @@ export function seed(now: number = Date.now() - 86_400_000): Workspace {
       claimedBy: ex.claimedBy ?? null,
       claimedAt: ex.claimedAt ?? null,
       completedAt: r[5] === 'DONE' ? D(1 + (num % 5)) : null,
-      subs: (SUBS[r[0]] ?? []).map((s) => ({ id: uid('s'), t: s[0], done: s[1] })),
+      subs: (SUBS[r[0]] ?? []).map((s) => ({ id: uid('s'), t: s[0], done: s[1], assigneeIds: [] })),
       open: false,
     };
   });
@@ -463,11 +463,17 @@ export function normalise(raw: unknown): Workspace | null {
       ...t,
       dependsOn: Array.isArray(t.dependsOn) ? t.dependsOn : [],
       assigneeIds: Array.isArray(t.assigneeIds) ? t.assigneeIds : legacy ? [legacy] : [],
-      subs: (Array.isArray(t.subs) ? t.subs : []).map((s) => ({
-        ...s,
-        id: s.id ?? uid('s'),
-        done: Boolean(s.done),
-      })),
+      subs: (Array.isArray(t.subs) ? t.subs : []).map((s) => {
+        // Steps once carried a single `assigneeId`; a hand-edited blob may
+        // carry neither.
+        const legacy = (s as { assigneeId?: string | null }).assigneeId;
+        return {
+          ...s,
+          id: s.id ?? uid('s'),
+          done: Boolean(s.done),
+          assigneeIds: Array.isArray(s.assigneeIds) ? s.assigneeIds : legacy ? [legacy] : [],
+        };
+      }),
     };
   });
   return ws;
@@ -896,7 +902,7 @@ export class FlowDomain {
     const t = this.findTask(taskId);
     const v = text.trim();
     if (!t || !v) return null;
-    const sub: Subtask = { id: uid('s'), t: v, done: false };
+    const sub: Subtask = { id: uid('s'), t: v, done: false, assigneeIds: [] };
     t.subs.push(sub);
     t.open = true;
     this.save();
@@ -946,46 +952,72 @@ export class FlowDomain {
         id: prev?.id ?? uid('s'),
         t: line,
         done: prev ? !!prev.done : false,
-        assigneeId: prev?.assigneeId ?? null,
+        assigneeIds: prev?.assigneeIds ?? [],
       };
     });
     this.save();
   }
 
   /**
-   * Put one person on one subtask, or (`null`) take it off.
+   * Put people on one subtask step, or (`[]`) take everybody off.
    *
-   * Keyed by subtask id rather than index: the assign modal is a round trip,
-   * and a list that shifted underneath it would otherwise assign the wrong step.
+   * Keyed by subtask id rather than index: the picker is a round trip, and a
+   * list that shifted underneath it would otherwise assign the wrong step.
+   * Wholesale rather than add/remove, because the picker is a set of ticks —
+   * "these are the people on this step" is one intention, not several.
    */
-  assignSub(taskId: string, subId: string, memberId: string | null): { message: string; task: Task | null } {
+  setSubAssignees(taskId: string, subId: string, memberIds: string[]): { message: string; task: Task | null } {
     const t = this.findTask(taskId);
     const sub = t?.subs.find((s) => s.id === subId);
     if (!t || !sub) return { message: 'Subtask not found', task: null };
-    if (!memberId) {
-      if (!sub.assigneeId) return { message: 'Nobody has that step', task: t };
-      sub.assigneeId = null;
-      this.save();
-      return { message: `“${sub.t}” is unassigned`, task: t };
-    }
-    const m = this.member(memberId);
-    if (!m) return { message: 'Member not found', task: t };
-    if (sub.assigneeId === memberId) return { message: `${m.name} already has that step`, task: t };
-    sub.assigneeId = memberId;
+    const clean = [...new Set(memberIds)].filter((id) => Boolean(this.member(id)));
+    const added = clean.filter((id) => !sub.assigneeIds.includes(id));
+    const removed = sub.assigneeIds.filter((id) => !clean.includes(id));
+    if (!added.length && !removed.length) return { message: 'No change', task: t };
+
+    sub.assigneeIds = clean;
     this.save();
-    this.emit({ action: 'subtask.assigned', taskKey: t.key, summary: `${m.name} · ${sub.t}` });
-    return { message: `${m.name} has “${sub.t}”`, task: t };
+    if (added.length) {
+      this.emit({
+        action: 'subtask.assigned',
+        taskKey: t.key,
+        summary: `${added.map((id) => this.member(id)?.name ?? 'member').join(', ')} · ${sub.t}`,
+      });
+    }
+    if (!clean.length) return { message: `“${sub.t}” has nobody on it`, task: t };
+    const names = added.map((id) => this.member(id)?.name ?? 'member').join(', ');
+    const left = removed.map((id) => this.member(id)?.name ?? 'member').join(', ');
+    const parts = [names && `${names} added`, left && `${left} removed`].filter(Boolean);
+    return { message: `“${sub.t}” · ${parts.join(', ')}`, task: t };
   }
 
-  /** One-click "this step is mine" — and the same click takes it back off. */
+  /** Add one person to a step without disturbing anybody already on it. */
+  addSubAssignee(taskId: string, subId: string, memberId: string): { message: string } {
+    const t = this.findTask(taskId);
+    const sub = t?.subs.find((s) => s.id === subId);
+    if (!t || !sub) return { message: 'Subtask not found' };
+    if (sub.assigneeIds.includes(memberId)) {
+      return { message: `${this.member(memberId)?.name ?? 'They'} already has that step` };
+    }
+    const r = this.setSubAssignees(taskId, subId, [...sub.assigneeIds, memberId]);
+    return { message: r.message };
+  }
+
+  /** One-click "this step is mine too" — and again to take yourself off it. */
   toggleSubAssignee(taskId: string, subId: string): { message: string } {
     const me = this.workspace.me;
     if (!me) return { message: 'Nobody is signed in' };
     const t = this.findTask(taskId);
     const sub = t?.subs.find((s) => s.id === subId);
     if (!t || !sub) return { message: 'Subtask not found' };
-    const r = this.assignSub(taskId, subId, sub.assigneeId === me ? null : me);
-    return { message: r.message };
+    // Decide from the state *before* the write: `setSubAssignees` replaces the
+    // list in place, so comparing afterwards would always say "off".
+    const wasOn = sub.assigneeIds.includes(me);
+    const next = wasOn ? sub.assigneeIds.filter((id) => id !== me) : [...sub.assigneeIds, me];
+    this.setSubAssignees(taskId, subId, next);
+    // The generic message talks about who was added; this is a first-person
+    // action, so say it plainly.
+    return { message: wasOn ? `You are off “${sub.t}”` : `You are on “${sub.t}”` };
   }
 
   nextKey(projectId: string): string {
@@ -1018,8 +1050,8 @@ export class FlowDomain {
   async createTask(input: {
     title: string;
     typeId: string;
-    /** The composer offers one owner; more can be added from the card. */
-    assigneeId: string | null;
+    /** The composer can name several owners; an empty list is the open pool. */
+    assigneeIds: string[];
     due: string | null;
     priority: PriorityId;
     desc?: string;
@@ -1036,8 +1068,8 @@ export class FlowDomain {
       title: input.title,
       typeId: input.typeId,
       stage: 'New',
-      status: input.assigneeId ? 'PROG' : 'TODO',
-      assigneeIds: input.assigneeId ? [input.assigneeId] : [],
+      status: input.assigneeIds.length ? 'PROG' : 'TODO',
+      assigneeIds: [...input.assigneeIds],
       priority: input.priority,
       estimate: 3,
       dueAt: input.due ? new Date(`${input.due}T12:00:00`).getTime() : null,
@@ -1045,8 +1077,8 @@ export class FlowDomain {
       description: input.desc ?? '',
       createdAt: Date.now(),
       createdBy: this.workspace.me,
-      claimedBy: input.assigneeId,
-      claimedAt: input.assigneeId ? Date.now() : null,
+      claimedBy: input.assigneeIds[0] ?? null,
+      claimedAt: input.assigneeIds.length ? Date.now() : null,
       completedAt: null,
       subs: [],
       open: false,
@@ -1162,10 +1194,10 @@ export class FlowDomain {
         t.claimedBy = t.assigneeIds[0] ?? null;
         t.claimedAt = t.claimedBy ? t.claimedAt : null;
       }
-      // Steps they owned go back into the unassigned pile rather than pointing
-      // at a member who no longer exists.
+      // Steps they were on lose them rather than pointing at a member who no
+      // longer exists.
       t.subs.forEach((s) => {
-        if (s.assigneeId === id) s.assigneeId = null;
+        if (s.assigneeIds.includes(id)) s.assigneeIds = s.assigneeIds.filter((x) => x !== id);
       });
     });
     this.workspace.members = this.workspace.members.filter((x) => x.id !== id);

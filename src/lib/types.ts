@@ -94,12 +94,13 @@ export interface Subtask {
   t: string;
   done: boolean;
   /**
-   * Who owns this step, if anybody.
+   * Everyone on this step, in display order. An empty list is nobody.
    *
-   * One person, unlike a task: a subtask is a single action, so "shared" would
-   * mean nothing. Absent (not null) when nobody has it.
+   * The same shape as a task's assignees, and for the same reason: two people
+   * pairing on one step is normal, and a step has no more reason to be
+   * exclusive than the task that holds it.
    */
-  assigneeId?: string | null;
+  assigneeIds: string[];
 }
 
 export interface Task {
