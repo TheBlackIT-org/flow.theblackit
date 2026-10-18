@@ -35,6 +35,34 @@ export interface Member {
   title: string;
   /** AI agents get the violet avatar and the `AI` chip. */
   agent?: boolean;
+  /**
+   * The address an invite is addressed to. A teammate can be added before
+   * they have ever signed in; the first account to sign in with this email
+   * claims the row.
+   */
+  email?: string | null;
+  /**
+   * The `auth.users` id behind this member, once the invite has been claimed.
+   *
+   * Read from the backend but never written by the sync layer: binding is a
+   * deliberate one-off claim, and a diff-flush that carried this column would
+   * let an ordinary member edit overwrite it.
+   */
+  userId?: string | null;
+}
+
+/**
+ * A signed-in account, as the app needs to know it.
+ *
+ * Deliberately not the provider's user object: the domain and the renderer
+ * only ever need a name, an email and a face, and keeping this shape narrow is
+ * what lets the sign-in screen be tested without an auth service.
+ */
+export interface AuthUser {
+  id: string;
+  email: string | null;
+  name: string;
+  avatarUrl: string | null;
 }
 
 export interface TaskType {
@@ -65,6 +93,14 @@ export interface Subtask {
   id: string;
   t: string;
   done: boolean;
+  /**
+   * Everyone on this step, in display order. An empty list is nobody.
+   *
+   * The same shape as a task's assignees, and for the same reason: two people
+   * pairing on one step is normal, and a step has no more reason to be
+   * exclusive than the task that holds it.
+   */
+  assigneeIds: string[];
 }
 
 export interface Task {
@@ -81,7 +117,13 @@ export interface Task {
   typeId: string;
   stage: string;
   status: StatusId;
-  assigneeId: string | null;
+  /**
+   * Everyone on this task, in display order. An empty list is the open pool.
+   *
+   * Deliberately not "one owner plus helpers": every assignee is equal, so a
+   * task can be shared without anybody being demoted to a watcher.
+   */
+  assigneeIds: string[];
   priority: PriorityId;
   /** Story points / days — kept for parity with the prototype. */
   estimate: number;
@@ -92,6 +134,10 @@ export interface Task {
   description: string;
   createdAt: number;
   createdBy: string | null;
+  /**
+   * Who first pulled this out of the open pool, and when. Historical: it stays
+   * true after other people are added, and is what "took it 3d ago" means.
+   */
   claimedBy: string | null;
   claimedAt: number | null;
   completedAt: number | null;

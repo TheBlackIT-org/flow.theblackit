@@ -16,7 +16,7 @@
 
 import { createClient } from '@supabase/supabase-js';
 import { emptyWorkspace } from '../domain';
-import type { Member, Subtask, Task, Workspace } from '../types';
+import type { AuthUser, Member, Subtask, Task, Workspace } from '../types';
 import {
   iso,
   memberFromRow,
@@ -26,8 +26,10 @@ import {
   projectToRow,
   str,
   strOrNull,
+  subtaskAssigneeToRow,
   subtaskFromRow,
   subtaskToRow,
+  taskAssigneeToRow,
   taskFromRow,
   taskToRow,
   type Row,
@@ -35,14 +37,28 @@ import {
 import type {
   ActivityEntry,
   ActivityRecord,
+  NotificationRecord,
   PresencePeer,
   SubscribeHandlers,
   WorkspaceRepository,
 } from './types';
 
 const ACTIVITY_LIMIT = 40;
+/** How much of a bell is worth fetching: more than anybody scrolls. */
+const NOTIFICATION_LIMIT = 30;
 /** Subset of a `Workspace` that is stored server-side. */
-const TABLES = ['members', 'projects', 'tasks', 'subtasks', 'activity'] as const;
+const TABLES = ['members', 'projects', 'tasks', 'subtasks', 'task_assignees', 'activity'] as const;
+/** Tables the realtime channel listens to. */
+const SYNCED_TABLES = [
+  'tasks',
+  'subtasks',
+  'projects',
+  'members',
+  'task_assignees',
+  'subtask_assignees',
+  'activity',
+  'notifications',
+] as const;
 
 /* --------------------------------- helpers -------------------------------- */
 
@@ -88,6 +104,8 @@ export interface SupabaseLikeQuery extends PromiseLike<SupabaseLikeResult> {
   delete(): SupabaseLikeQuery;
   eq(column: string, value: unknown): SupabaseLikeQuery;
   in(column: string, values: unknown[]): SupabaseLikeQuery;
+  /** `column is null` — PostgREST cannot express that with `eq`. */
+  is(column: string, value: unknown): SupabaseLikeQuery;
   order(column: string, opts?: unknown): SupabaseLikeQuery;
   limit(count: number): SupabaseLikeQuery;
   single(): SupabaseLikeQuery;
@@ -268,20 +286,25 @@ export class SupabaseRepository implements WorkspaceRepository {
     const id = await this.ensureWorkspaceId();
     if (!id) return null;
 
-    const [members, projects, tasks, subtasks] = await Promise.all([
+    const [members, projects, tasks, subtasks, assignees, stepAssignees] = await Promise.all([
       this.client.from('members').select('*').eq('workspace_id', id),
       this.client.from('projects').select('*').eq('workspace_id', id),
       this.client.from('tasks').select('*').order('position', { ascending: true }),
       this.client.from('subtasks').select('*').order('position', { ascending: true }),
+      this.client.from('task_assignees').select('*'),
+      this.client.from('subtask_assignees').select('*'),
     ]);
 
-    const firstError = [members, projects, tasks, subtasks].find((r) => r.error)?.error;
+    const firstError = [members, projects, tasks, subtasks, assignees, stepAssignees].find((r) => r.error)
+      ?.error;
     if (firstError) throw new Error(`Could not read the workspace: ${firstError.message}`);
 
     const memberRows = (members.data ?? []) as Row[];
     const projectRows = (projects.data ?? []) as Row[];
     const taskRows = (tasks.data ?? []) as Row[];
     const subtaskRows = (subtasks.data ?? []) as Row[];
+    const assigneeRows = (assignees.data ?? []) as Row[];
+    const stepAssigneeRows = (stepAssignees.data ?? []) as Row[];
 
     // The workspace is genuinely empty: create it and return what we seeded.
     void id;
@@ -289,6 +312,7 @@ export class SupabaseRepository implements WorkspaceRepository {
     const scopedTasks = taskRows.filter((t) => projectIds.has(str(t.project_id)));
     const taskIds = new Set(scopedTasks.map((t) => str(t.id)));
 
+    const subTaskIds = new Set<string>();
     const byTask = new Map<string, Subtask[]>();
     subtaskRows
       .filter((s) => taskIds.has(str(s.task_id)))
@@ -296,6 +320,20 @@ export class SupabaseRepository implements WorkspaceRepository {
         const list = byTask.get(str(s.task_id)) ?? [];
         list.push(subtaskFromRow(s));
         byTask.set(str(s.task_id), list);
+        subTaskIds.add(str(s.id));
+      });
+
+    // Assignment is a join table: a task's people are every row naming it, and
+    // rows for tasks outside this workspace's projects are ignored. `assigned_at`
+    // orders them, so the first person to be put on a task stays first — which
+    // is what the card shows and what its colour is derived from.
+    const byTaskAssignees = new Map<string, Array<{ memberId: string; at: number }>>();
+    assigneeRows
+      .filter((a) => taskIds.has(str(a.task_id)))
+      .forEach((a) => {
+        const list = byTaskAssignees.get(str(a.task_id)) ?? [];
+        list.push({ memberId: str(a.member_id), at: ms(a.assigned_at) ?? 0 });
+        byTaskAssignees.set(str(a.task_id), list);
       });
 
     // `taskRows` arrives ordered by `position` (the query asks for it), and
@@ -303,9 +341,26 @@ export class SupabaseRepository implements WorkspaceRepository {
     // array order per project: if the stored positions disagreed with the sort
     // order — legacy rows, or several clients writing at once — a drag would
     // otherwise compare equal and never be persisted.
+    // Step owners, keyed by subtask and ordered by when they were added, so
+    // the first person put on a step stays first in the stack.
+    const bySubAssignee = new Map<string, Array<{ memberId: string; at: number }>>();
+    stepAssigneeRows
+      .filter((a) => subTaskIds.has(str(a.subtask_id)))
+      .forEach((a) => {
+        const list = bySubAssignee.get(str(a.subtask_id)) ?? [];
+        list.push({ memberId: str(a.member_id), at: ms(a.assigned_at) ?? 0 });
+        bySubAssignee.set(str(a.subtask_id), list);
+      });
+
     const tasksOut: Task[] = scopedTasks.map((row) => {
       const task = taskFromRow(row);
       task.subs = byTask.get(task.id) ?? [];
+      task.subs.forEach((sub) => {
+        sub.assigneeIds = (bySubAssignee.get(sub.id) ?? []).sort((a, b) => a.at - b.at).map((a) => a.memberId);
+      });
+      task.assigneeIds = (byTaskAssignees.get(task.id) ?? [])
+        .sort((a, b) => a.at - b.at)
+        .map((a) => a.memberId);
       return task;
     });
     const counters = new Map<string, number>();
@@ -430,6 +485,80 @@ export class SupabaseRepository implements WorkspaceRepository {
       .map((row) => ({ ...row, ...tag }));
     if (subRows.length) await this.assert('subtasks', this.client.from('subtasks').upsert(subRows));
 
+    /* ---- task ⇄ member assignment ---- */
+    // Membership is the whole row, so it is only ever inserted or deleted —
+    // never merged. Comparing `task|member` strings against the last synced
+    // snapshot is therefore enough to find both halves of the diff.
+    const key = (taskId: string, memberId: string) => `${taskId}|${memberId}`;
+    const prevAssigneeKeys = new Set(
+      (prev?.tasks ?? []).flatMap((t) => t.assigneeIds.map((m) => key(t.id, m))),
+    );
+    const nextAssigneeKeys = new Set(ws.tasks.flatMap((t) => t.assigneeIds.map((m) => key(t.id, m))));
+
+    const addedAssignees = ws.tasks.flatMap((t) =>
+      t.assigneeIds
+        .filter((m) => !prevAssigneeKeys.has(key(t.id, m)))
+        .map((m) => ({ ...taskAssigneeToRow({ taskId: t.id, memberId: m }), ...tag })),
+    );
+    if (addedAssignees.length) {
+      await this.assert('task_assignees', this.client.from('task_assignees').upsert(addedAssignees));
+    }
+
+    // Removals are grouped per task. A single `in` over both columns would be a
+    // cross product and would delete pairs that are still wanted — e.g. moving
+    // somebody from one task to another would remove them from both.
+    const removals = new Map<string, string[]>();
+    (prev?.tasks ?? []).forEach((t) => {
+      const gone = t.assigneeIds.filter((m) => !nextAssigneeKeys.has(key(t.id, m)));
+      // If the task itself is gone the foreign key cascade already cleared it.
+      if (gone.length && nextTasks.has(t.id)) removals.set(t.id, gone);
+    });
+    for (const [taskId, memberIds] of removals) {
+      await this.assert(
+        'task_assignees',
+        this.client.from('task_assignees').delete().eq('task_id', taskId).in('member_id', memberIds),
+      );
+    }
+
+    /* ---- subtask ⇄ member assignment ---- */
+    // Same shape as the task-level diff above: membership rows are only ever
+    // added or removed, never merged.
+    const stepKey = (subId: string, memberId: string) => `${subId}|${memberId}`;
+    const prevStepKeys = new Set(
+      (prev?.tasks ?? []).flatMap((t) =>
+        t.subs.flatMap((s) => (s.assigneeIds ?? []).map((m) => stepKey(s.id, m))),
+      ),
+    );
+    const nextStepKeys = new Set(
+      ws.tasks.flatMap((t) => t.subs.flatMap((s) => (s.assigneeIds ?? []).map((m) => stepKey(s.id, m)))),
+    );
+
+    const addedStepAssignees = ws.tasks.flatMap((t) =>
+      t.subs.flatMap((s) =>
+        (s.assigneeIds ?? [])
+          .filter((m) => !prevStepKeys.has(stepKey(s.id, m)))
+          .map((m) => ({ ...subtaskAssigneeToRow({ subtaskId: s.id, memberId: m }), ...tag })),
+      ),
+    );
+    if (addedStepAssignees.length) {
+      await this.assert('subtask_assignees', this.client.from('subtask_assignees').upsert(addedStepAssignees));
+    }
+
+    const stepRemovals = new Map<string, string[]>();
+    (prev?.tasks ?? []).forEach((t) => {
+      t.subs.forEach((s) => {
+        const gone = (s.assigneeIds ?? []).filter((m) => !nextStepKeys.has(stepKey(s.id, m)));
+        // If the step itself is gone the foreign key cascade already cleared it.
+        if (gone.length && nextSubs.has(s.id)) stepRemovals.set(s.id, gone);
+      });
+    });
+    for (const [subId, memberIds] of stepRemovals) {
+      await this.assert(
+        'subtask_assignees',
+        this.client.from('subtask_assignees').delete().eq('subtask_id', subId).in('member_id', memberIds),
+      );
+    }
+
     /* ---- deletions, deepest first ---- */
     const goneSubs = [...prevSubs.keys()].filter((sid) => {
       if (nextSubs.has(sid)) return false;
@@ -476,6 +605,111 @@ export class SupabaseRepository implements WorkspaceRepository {
     return String(data);
   }
 
+  /* ------------------------------ identity --------------------------- */
+
+  /**
+   * Bind a signed-in account to its member row.
+   *
+   * The row is found two ways, in order of authority:
+   *   1. it already names this account (`user_id`), so a returning teammate
+   *      signs straight back in even if they changed their email;
+   *   2. it is an unclaimed invite whose `email` matches, and claiming writes
+   *      `user_id` back so every later sign-in takes path 1.
+   *
+   * Matching happens here rather than in SQL because `email` may not exist yet
+   * on a deployment that has not run `0003_member_identity.sql`, and a failed
+   * `ilike` would be indistinguishable from "no invite". Reading the unclaimed
+   * rows and comparing in JS can tell those two cases apart, and says so.
+   */
+  async linkAccount(user: AuthUser): Promise<Member | null> {
+    const id = this.workspaceId ?? (await this.ensureWorkspaceId());
+    // No workspace yet: this account is the first one through the door. The
+    // setup wizard creates the owner row and binds it, so there is nothing to
+    // link to here.
+    if (!id) return null;
+
+    const bound = await this.client
+      .from('members')
+      .select('*')
+      .eq('workspace_id', id)
+      .eq('user_id', user.id)
+      .limit(1);
+    if (bound.error) throw new Error(`Could not read your member row: ${bound.error.message}`);
+    const boundRow = ((bound.data ?? []) as Row[])[0];
+    if (boundRow) return memberFromRow(boundRow);
+
+    const email = (user.email ?? '').trim().toLowerCase();
+    if (!email) return null;
+
+    const open = await this.client
+      .from('members')
+      .select('*')
+      .eq('workspace_id', id)
+      .is('user_id', null);
+    if (open.error) throw new Error(`Could not read the team: ${open.error.message}`);
+    const openRows = (open.data ?? []) as Row[];
+
+    // PostgREST omits a column that does not exist, so its absence on rows that
+    // clearly exist means the identity migration has not been applied. Without
+    // this check the app would report "you are not invited", which is wrong and
+    // sends the person asking an owner for an invite they already have.
+    if (openRows.length && !openRows.some((row) => 'email' in row)) {
+      throw new Error(
+        'This database has no members.email column yet. Run supabase/migrations/0003_member_identity.sql, then reload.',
+      );
+    }
+
+    const match = openRows.find((row) => str(row.email).trim().toLowerCase() === email);
+    if (!match) return null;
+
+    const claimed = await this.client
+      .from('members')
+      .update({ user_id: user.id })
+      .eq('id', str(match.id));
+    if (claimed.error) throw new Error(`Could not claim your invite: ${claimed.error.message}`);
+
+    return memberFromRow({ ...match, user_id: user.id });
+  }
+
+  /**
+   * The one-time bootstrap for a workspace that predates sign-in.
+   *
+   * Those member rows have names but no email, so there is nothing for
+   * `linkAccount` to match and every teammate would be locked out. While
+   * *nobody* in the workspace is bound, an account may claim one row by
+   * choosing its name. The guard is re-checked here rather than trusted from
+   * the UI, and the update itself only touches a row that is still unbound, so
+   * two people racing cannot both win.
+   */
+  async claimMember(memberId: string, user: AuthUser): Promise<Member | null> {
+    const id = this.workspaceId ?? (await this.ensureWorkspaceId());
+    if (!id) return null;
+
+    const existing = await this.client.from('members').select('*').eq('workspace_id', id);
+    if (existing.error) throw new Error(`Could not read the team: ${existing.error.message}`);
+    const rows = (existing.data ?? []) as Row[];
+
+    // Anybody already bound means the bootstrap is over: from here on the way
+    // in is an email invitation, not a name pick.
+    if (rows.some((row) => strOrNull(row.user_id))) return null;
+
+    const target = rows.find((row) => str(row.id) === memberId);
+    if (!target) return null;
+
+    const claimed = await this.client
+      .from('members')
+      .update({ user_id: user.id })
+      .eq('id', memberId)
+      .is('user_id', null)
+      .select('id')
+      .single();
+    if (claimed.error) throw new Error(`Could not claim ${str(target.name, 'that name')}: ${claimed.error.message}`);
+    // No row came back: somebody else claimed it between the read and the write.
+    if (!claimed.data) return null;
+
+    return memberFromRow({ ...target, user_id: user.id });
+  }
+
   /* ----------------------------- realtime ---------------------------- */
 
   subscribe(handlers: SubscribeHandlers, me: Member | null): () => void {
@@ -484,7 +718,7 @@ export class SupabaseRepository implements WorkspaceRepository {
       config: { presence: { key: me?.id ?? 'anonymous' } },
     });
 
-    (['tasks', 'subtasks', 'projects', 'members', 'activity'] as const).forEach((table) => {
+    SYNCED_TABLES.forEach((table) => {
       channel.on(
         'postgres_changes',
         { event: '*', schema: 'public', table },
@@ -580,6 +814,54 @@ export class SupabaseRepository implements WorkspaceRepository {
     }));
     this.nextActivityId = (this.activity[0]?.id ?? 0) + 1;
     return this.activity;
+  }
+
+  /* ---------------------------- notifications ------------------------ */
+
+  /**
+   * One member's bell, newest first.
+   *
+   * The `recipient_id` filter is not a convenience — it is what the policy
+   * checks too, so a wrong id here returns nothing rather than somebody else's
+   * notifications.
+   */
+  async recentNotifications(memberId: string, limit: number): Promise<NotificationRecord[]> {
+    if (!memberId) return [];
+    const { data, error } = await this.client
+      .from('notifications')
+      .select('*')
+      .eq('recipient_id', memberId)
+      .order('created_at', { ascending: false })
+      .limit(Math.min(limit, NOTIFICATION_LIMIT));
+    if (error || !data) return [];
+    return (data as Row[]).map((row) => ({
+      id: Number(row.id ?? 0),
+      kind: str(row.kind),
+      actorId: strOrNull(row.actor_id),
+      actorName: str(row.actor_name),
+      taskId: strOrNull(row.task_id),
+      taskKey: str(row.task_key),
+      summary: str(row.summary),
+      createdAt: ms(row.created_at) ?? Date.now(),
+      readAt: ms(row.read_at),
+    }));
+  }
+
+  async markNotificationsRead(memberId: string, ids: number[] | 'all'): Promise<void> {
+    if (!memberId) return;
+    if (ids !== 'all' && !ids.length) return;
+    const query = this.client
+      .from('notifications')
+      .update({ read_at: new Date().toISOString() })
+      .eq('recipient_id', memberId);
+    // Reading an already-read row is not an error, so the unread filter does
+    // the work rather than the client tracking which ids are outstanding.
+    const scoped = ids === 'all' ? query.is('read_at', null) : query.in('id', ids).is('read_at', null);
+    try {
+      await scoped;
+    } catch {
+      // Marking read must never break the bell it is describing.
+    }
   }
 
   /**

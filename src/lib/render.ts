@@ -31,8 +31,8 @@ import {
   statusOf,
   type FlowDomain,
 } from './domain';
-import type { PresencePeer } from './repository/types';
-import type { ChatMessage, ParsedTask, Task } from './types';
+import type { NotificationRecord, PresencePeer } from './repository/types';
+import type { AuthUser, ChatMessage, ParsedTask, Subtask, Task } from './types';
 
 export interface ChatState {
   open: boolean;
@@ -54,6 +54,7 @@ export const HOOKS = {
   toast: '#toast',
   headProgress: '#hp',
   live: '#live',
+  account: '#acct',
   activity: '#activity',
   setupBanner: '#setup-banner',
 } as const;
@@ -74,6 +75,24 @@ export function avatar(domain: FlowDomain, id: string | null, big = false): stri
   }" title="${esc(m.name)}">${esc(initials)}</span>`;
 }
 
+/**
+ * The faces of everybody on a task, overlapped.
+ *
+ * A card is a fixed width, so the stack shows the first few and counts the
+ * rest rather than growing without bound — the full list is one click away in
+ * the assign modal.
+ */
+export function avatarStack(domain: FlowDomain, ids: string[], max = 3): string {
+  if (!ids.length) return '';
+  const shown = ids.slice(0, max);
+  return (
+    '<span class="avstack">' +
+    shown.map((id) => avatar(domain, id)).join('') +
+    (ids.length > max ? `<span class="avmore">+${ids.length - max}</span>` : '') +
+    '</span>'
+  );
+}
+
 function statusIcon(status: string): string {
   if (status === 'DONE') return ICON.check;
   if (status === 'PROG') return ICON.play;
@@ -83,11 +102,28 @@ function statusIcon(status: string): string {
 }
 
 /**
+ * The face of a signed-in account, which is not a workspace member yet.
+ *
+ * `avatar()` reads a member out of the domain, so it has nothing to draw for
+ * somebody signing in for the first time — before they are a member at all.
+ */
+export function accountAvatar(account: AuthUser, big = false): string {
+  const initials = account.name
+    .split(/\s+/)
+    .map((w) => w[0] ?? '')
+    .slice(0, 2)
+    .join('');
+  return `<span class="av" style="background:#5b9bff${
+    big ? ';width:28px;height:28px;font-size:11px' : ''
+  }" title="${esc(account.email ?? account.name)}">${esc(initials)}</span>`;
+}
+
+/**
  * The ⋯ menu. Deliberately small: create work, manage people, wipe everything
  * back to a blank workspace, or take the data out. The demo workspace is only
  * offered on the first-run welcome screen.
  */
-export function projectMenu(): string {
+export function projectMenu(account?: AuthUser | null): string {
   return (
     '<div class="pop ws" data-pop="ws">' +
     '<div class="lbl">Project</div>' +
@@ -97,6 +133,11 @@ export function projectMenu(): string {
     '<div class="sep"></div>' +
     '<button class="mi" data-act="ws-export">Export data as JSON</button>' +
     '<button class="mi" data-act="ws-help">Ask the assistant</button>' +
+    (account
+      ? '<div class="sep"></div>' +
+        `<div class="lbl">${esc(account.name)}${account.email ? ` · ${esc(account.email)}` : ''}</div>` +
+        '<button class="mi" data-act="auth-signout">Sign out</button>'
+      : '') +
     '<div class="sep"></div>' +
     '<button class="mi danger" data-act="ws-fresh">Reset everything</button>' +
     '</div>'
@@ -106,15 +147,23 @@ export function projectMenu(): string {
 /** Header control cluster: project picker, acting-as picker, workspace menu. */
 /** The ⋯ button and its popover. Rendered into its own header slot so the
  *  controls column can be sized independently of it. */
-export function renderMenuButton(): string {
+export function renderMenuButton(account?: AuthUser | null): string {
   return (
     '<button class="btn sm" data-act="wsmenu" aria-label="Project menu" aria-haspopup="menu">' +
     '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>' +
-    `</button>${projectMenu()}`
+    `</button>${projectMenu(account)}`
   );
 }
 
-export function renderControls(domain: FlowDomain): string {
+/**
+ * The header controls.
+ *
+ * With a signed-in account the *Acting as* picker is gone: it let anyone
+ * become anyone, which makes every owner, claim time and audit entry a
+ * statement about a dropdown rather than a person. Without a backend there is
+ * no account, and the picker is the only way to be somebody.
+ */
+export function renderControls(domain: FlowDomain, account?: AuthUser | null): string {
   const P = domain.currentProject;
   const db = domain.workspace;
   return (
@@ -128,16 +177,29 @@ export function renderControls(domain: FlowDomain): string {
           .join('') +
         '</select></div>'
       : '<div class="fld"><span>Project</span><select disabled><option>No project yet</option></select></div>') +
-    '<div class="fld"><span>Acting as</span><select data-act="me">' +
-    (db.members.length
-      ? db.members
-          .map((m) => `<option value="${esc(m.id)}" ${m.id === db.me ? 'selected' : ''}>${esc(m.name)}</option>`)
-          .join('')
-      : '<option>Nobody yet</option>') +
-    '</select></div>' +
+    // Signed in, the account is shown after the live chip instead; see
+    // renderAccount.
+    (account
+      ? ''
+      : '<div class="fld"><span>Acting as</span><select data-act="me">' +
+        (db.members.length
+          ? db.members
+              .map((m) => `<option value="${esc(m.id)}" ${m.id === db.me ? 'selected' : ''}>${esc(m.name)}</option>`)
+              .join('')
+          : '<option>Nobody yet</option>') +
+        '</select></div>') +
     '<button class="btn sm" data-act="new-project">+ Project</button>' +
     `<button class="btn sm" data-act="team">Team${db.members.length ? ` (${db.members.length})` : ''}</button>`
   );
+}
+
+/** The signed-in indicator, which sits in the header after the live chip. */
+export function renderAccount(account?: AuthUser | null): string {
+  return account
+    ? '<div class="fld"><span>Signed in</span><div class="mchip">' +
+        accountAvatar(account) +
+        `<b>${esc(account.name)}</b></div></div>`
+    : '';
 }
 
 /** Progress bar + legend + member/status filters. */
@@ -217,8 +279,8 @@ export function popMenu(t: Task): string {
     '</div>' +
     '<div class="sep"></div>' +
     `<button class="mi" data-act="edit" data-id="${esc(t.id)}">Edit task</button>` +
-    `<button class="mi" data-act="reassign" data-id="${esc(t.id)}">Reassign owner</button>` +
-    (t.assigneeId ? `<button class="mi" data-act="unassign" data-id="${esc(t.id)}">Return to open pool</button>` : '') +
+    `<button class="mi" data-act="reassign" data-id="${esc(t.id)}">Assign people</button>` +
+    (t.assigneeIds.length ? `<button class="mi" data-act="unassign" data-id="${esc(t.id)}">Return to open pool</button>` : '') +
     '<div class="sep"></div>' +
     `<button class="mi danger" data-act="delete" data-id="${esc(t.id)}">Delete task</button>` +
     '</div>'
@@ -228,7 +290,10 @@ export function popMenu(t: Task): string {
 export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string {
   const now = Date.now();
   const st = statusOf(t.status);
-  const m = domain.member(t.assigneeId);
+  const assignees = t.assigneeIds
+    .map((id) => domain.member(id))
+    .filter((m): m is NonNullable<ReturnType<FlowDomain['member']>> => Boolean(m));
+  const me = domain.workspace.me;
   const ty = domain.typeName(t.typeId);
   const prio = prioOf(t.priority);
   const doneSubs = t.subs.filter((s) => s.done).length;
@@ -276,8 +341,10 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
         `Waiting on ${waiting.map((d) => esc(d.key)).join(', ')} · optional, not enforced</div>`
       : '') +
     '<div class="meta">' +
-    (m
-      ? `<span class="who">${avatar(domain, t.assigneeId)}${esc(m.name)}${m.agent ? ' <span class="tchip">AI</span>' : ''}</span>` +
+    (assignees.length
+      ? `<span class="who">${avatarStack(domain, t.assigneeIds)}${assignees
+          .map((m) => esc(m.name))
+          .join(', ')}${assignees.some((m) => m.agent) ? ' <span class="tchip">AI</span>' : ''}</span>` +
         (t.claimedAt
           ? `<span class="taken">took it ${relAgo(t.claimedAt)}</span>`
           : '<span class="taken">assigned</span>')
@@ -294,23 +361,45 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
     '</button>' +
     `<div class="subs${t.open ? ' on' : ''}">` +
     (t.subs.length
-      ? t.subs
-          .map(
-            (s, ix) =>
+      ? '<div class="slist">' +
+        t.subs
+          .map((s, ix) => {
+            const owners = s.assigneeIds
+              .map((id) => domain.member(id))
+              .filter((m): m is NonNullable<ReturnType<FlowDomain['member']>> => Boolean(m));
+            const mine = s.assigneeIds.includes(domain.workspace.me ?? '');
+            return (
               `<div class="srow${s.done ? ' on' : ''}">` +
               `<button class="sbox${s.done ? ' on' : ''}" data-act="sub" data-id="${esc(t.id)}" data-idx="${esc(ix)}">${
                 s.done ? ICON.check : ''
               }</button>` +
-              `<span>${esc(s.t)}</span>` +
-              `<button class="sdel" data-act="sub-del" data-id="${esc(t.id)}" data-idx="${esc(ix)}" title="Delete this subtask">✕</button></div>`,
-          )
-          .join('')
+              `<span class="stext">${esc(s.t)}</span>` +
+              // One control for both states: the faces of whoever is on the
+              // step, or a placeholder that offers the picker when nobody is.
+              `<button class="sassign${owners.length ? ' on' : ''}${mine ? ' mine' : ''}" data-act="sub-assign" data-id="${esc(
+                t.id,
+              )}" data-sub="${esc(s.id)}" title="${
+                owners.length
+                  ? `${esc(owners.map((m) => m.name).join(', '))} · click to change`
+                  : 'Assign this step'
+              }">${owners.length ? avatarStack(domain, s.assigneeIds, 2) : ICON.person}</button>` +
+              `<button class="sdel" data-act="sub-del" data-id="${esc(t.id)}" data-idx="${esc(ix)}" title="Delete this subtask">✕</button></div>`
+            );
+          })
+          .join('') +
+        '</div>'
       : '<div class="subempty">No subtasks yet. Anyone can add one.</div>') +
     `<div class="subadd"><input type="text" data-subinput="${esc(t.id)}" placeholder="Add a subtask and press Enter" />` +
     `<button data-act="sub-add" data-id="${esc(t.id)}">Add</button></div>` +
     '</div>' +
     '<div class="acts">' +
-    (!m ? `<button class="take" data-act="claim" data-id="${esc(t.id)}">Take this task</button>` : '') +
+    (!assignees.length ? `<button class="take" data-act="claim" data-id="${esc(t.id)}">Take this task</button>` : '') +
+    (assignees.length && me && !t.assigneeIds.includes(me)
+      ? `<button class="take" data-act="assign-me" data-id="${esc(t.id)}">Assign me too</button>`
+      : '') +
+    (t.assigneeIds.includes(me ?? '')
+      ? '<span class="mchip" style="color:var(--teal);border-color:rgba(46,230,197,.35)">you are on this</span>'
+      : '') +
     (t.status === 'DONE'
       ? '<span class="mchip" style="color:var(--green);border-color:rgba(53,208,127,.35)">Completed</span>'
       : '') +
@@ -334,15 +423,21 @@ export function composerRow(domain: FlowDomain, index: number): string {
       .join('')}<option value="__custom">Other…</option></select>` +
     '<input type="text" id="newTypeCustom" class="typefree" placeholder="Type your own" hidden />' +
     '</div>' +
-    '<div class="fld"><span>Owner</span><select id="newOwner">' +
-    '<option value="">Not taken · open pool</option>' +
-    domain.workspace.members
-      .map(
-        (x) =>
-          `<option value="${esc(x.id)}" ${x.id === domain.workspace.me ? 'selected' : ''}>${esc(x.name)}</option>`,
-      )
-      .join('') +
-    '</select></div>' +
+    // Owners, plural, ticked. A single `<select>` here was the last place that
+    // still assumed one owner per task, so creating shared work meant creating
+    // it and then reopening the card.
+    '<div class="fld"><span>Owners · optional</span><div class="ownerchips">' +
+    (domain.workspace.members.length
+      ? domain.workspace.members
+          .map(
+            (x) =>
+              `<button type="button" class="ownertoggle${x.id === domain.workspace.me ? ' on' : ''}" data-act="ownertoggle" data-owner="${esc(
+                x.id,
+              )}">${esc(x.name)}</button>`,
+          )
+          .join('')
+      : '<span class="taken" style="border:0;padding:0">Nobody in the team yet</span>') +
+    '</div></div>' +
     '<div class="fld"><span>Due date</span><input type="date" id="newDue" /></div>' +
     `<div class="fld"><span>Priority</span><select id="newPrio">${PRIO.map(
       (p) => `<option value="${esc(p.id)}"${p.id === 'normal' ? ' selected' : ''}>${p.label}</option>`,
@@ -424,6 +519,159 @@ export function renderWelcome(domain: FlowDomain): string {
   );
 }
 
+/* --------------------------------- sign-in ------------------------------- */
+
+/**
+ * Which card the sign-in overlay is showing.
+ *
+ * `signin` and `sent` are the unauthenticated half; `not-invited` and `error`
+ * are shown to somebody who *is* authenticated but cannot use the workspace
+ * yet — a different problem, and a different sentence to fix it. `claim` is the
+ * one-time bootstrap for a workspace whose member rows predate sign-in and
+ * therefore carry no email to invite anybody by.
+ */
+export type AuthStep = 'signin' | 'sent' | 'not-invited' | 'error' | 'claim';
+
+/** A member row offered by the one-time bootstrap picker. */
+export interface ClaimableMember {
+  id: string;
+  name: string;
+  title: string;
+}
+
+export interface AuthScreenState {
+  step: AuthStep;
+  /** The address typed, or the one a code was sent to. */
+  email: string;
+  /** One line under the headline: an error, or what to do next. */
+  message: string;
+  /** The signed-in account, once there is one. */
+  account: AuthUser | null;
+  /** Only for `claim`: the names nobody has claimed yet. */
+  claimable?: ClaimableMember[];
+}
+
+const GITHUB_MARK =
+  '<svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.61.07-.61 1 .07 1.53 1.03 1.53 1.03.9 1.53 2.36 1.09 2.93.83.09-.65.35-1.09.64-1.34-2.22-.25-4.56-1.11-4.56-4.95 0-1.09.39-1.99 1.03-2.69-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.03a9.4 9.4 0 0 1 5 0c1.91-1.3 2.75-1.03 2.75-1.03.55 1.38.2 2.4.1 2.65.64.7 1.03 1.6 1.03 2.69 0 3.85-2.35 4.7-4.58 4.94.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2z"/></svg>';
+
+/**
+ * The sign-in overlay.
+ *
+ * Rendered into the same fixed overlay the first-run welcome uses, so it is
+ * impossible for both to be on screen at once and there is one place that
+ * decides whether the board is visible.
+ */
+export function renderAuthScreen(state: AuthScreenState): string {
+  const logo =
+    '<div class="wlogo"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="4" r="2.4"/><circle cx="12" cy="12" r="2.4"/><circle cx="12" cy="20" r="2.4"/><path d="M12 6.4v3.2M12 14.4v3.2"/></svg></div>';
+  const message = state.message ? `<div class="authmsg">${esc(state.message)}</div>` : '';
+  const who = state.account?.email ?? state.account?.name ?? 'this account';
+
+  if (state.step === 'not-invited') {
+    return (
+      '<div class="wcard">' +
+      logo +
+      '<h2>Not on this workspace yet</h2>' +
+      '<div class="wsub">You are signed in as <b>' +
+      esc(who) +
+      '</b>, but no member here is connected to that account. Ask an owner to add you under <b>Team</b> with this address — then check again.</div>' +
+      message +
+      '<div class="authacts">' +
+      '<button class="btn primary" data-act="auth-retry">Check again</button>' +
+      '<button class="btn ghost" data-act="auth-signout">Sign out</button>' +
+      '</div>' +
+      '</div>'
+    );
+  }
+
+  if (state.step === 'claim') {
+    const options = (state.claimable ?? [])
+      .map(
+        (m) =>
+          `<button class="claimrow" data-act="auth-claim" data-id="${esc(m.id)}">` +
+          `<span class="claimname">${esc(m.name)}</span>` +
+          `<span class="claimtitle">${esc(m.title)}</span>` +
+          '</button>',
+      )
+      .join('');
+    // No names left to offer (the last one was taken while this was on screen):
+    // fall back to the invitation wording rather than an empty card.
+    if (!options) {
+      return renderAuthScreen({ ...state, step: 'not-invited', claimable: [] });
+    }
+    return (
+      '<div class="wcard">' +
+      logo +
+      '<h2>Which one of these are you?</h2>' +
+      '<div class="wsub">You are signed in as <b>' +
+      esc(who) +
+      '</b>. This workspace was set up before sign-in existed, so nobody here is connected to an account yet. Pick your name once and it becomes yours — after that, joining is by invitation.</div>' +
+      message +
+      '<div class="claimlist">' +
+      options +
+      '</div>' +
+      '<div class="authacts">' +
+      '<button class="btn ghost" data-act="auth-signout">None of these · sign out</button>' +
+      '</div>' +
+      '</div>'
+    );
+  }
+
+  if (state.step === 'error') {
+    return (
+      '<div class="wcard">' +
+      logo +
+      '<h2>Could not open the workspace</h2>' +
+      '<div class="wsub">You are signed in, but the shared workspace could not be read. This is usually a database that still needs its migrations, or a connection problem.</div>' +
+      message +
+      '<div class="authacts">' +
+      '<button class="btn primary" data-act="auth-retry">Try again</button>' +
+      '<button class="btn ghost" data-act="auth-signout">Sign out</button>' +
+      '</div>' +
+      '</div>'
+    );
+  }
+
+  if (state.step === 'sent') {
+    return (
+      '<div class="wcard">' +
+      logo +
+      '<h2>Check your email</h2>' +
+      '<div class="wsub">A sign-in link is on its way to <b>' +
+      esc(state.email) +
+      '</b>. Open it, or type the code from the same email below. It expires in an hour.</div>' +
+      message +
+      '<div class="f"><label>Code from the email</label><input type="text" id="authCode" inputmode="numeric" autocomplete="one-time-code" placeholder="123456" /></div>' +
+      '<div class="authacts">' +
+      '<button class="btn primary" data-act="auth-code">Sign in</button>' +
+      '<button class="btn ghost" data-act="auth-other">Use a different email</button>' +
+      '</div>' +
+      '<div class="wfoot">Nothing here has a password to remember, reset, or leak.</div>' +
+      '</div>'
+    );
+  }
+
+  return (
+    '<div class="wcard">' +
+    logo +
+    '<h2>Sign in to BlackIT Flow</h2>' +
+    '<div class="wsub">Your team shares one workspace. Signing in is what makes an owner an owner: assignments, take-times and the activity trail point at a person instead of a dropdown.</div>' +
+    message +
+    '<div class="wopts authone">' +
+    '<button class="wopt primary" data-act="auth-github"><div class="wt">' +
+    GITHUB_MARK +
+    ' Continue with GitHub</div><div class="wd">No password. Uses the GitHub account your team already knows you by.</div></button>' +
+    '</div>' +
+    '<div class="authdiv"><span>or use an email link</span></div>' +
+    '<div class="f"><label>Work email</label><input type="email" id="authEmail" value="' +
+    esc(state.email) +
+    '" placeholder="you@theblackit.com" autocomplete="email" /></div>' +
+    '<div class="authacts"><button class="btn primary" data-act="auth-email">Email me a sign-in link</button></div>' +
+    '<div class="wfoot">Sign-in is invitation based: an owner adds your email under Team first. Anyone outside the workspace sees an empty page.</div>' +
+    '</div>'
+  );
+}
+
 /* --------------------------------- modal -------------------------------- */
 
 export function modalShell(title: string, body: string, footer: string): string {
@@ -460,17 +708,76 @@ export function editTaskBody(domain: FlowDomain, t: Task): string {
   );
 }
 
+/**
+ * Who is on this task — a checkbox per member, because a task can be shared.
+ *
+ * Ticked means "on the task", with no primary owner and no watcher tier: two
+ * people sharing work is the normal case, not a special one.
+ */
 export function reassignBody(domain: FlowDomain, t: Task): string {
+  const me = domain.workspace.me;
+  const rows = domain.workspace.members
+    .map((m) => {
+      const on = t.assigneeIds.includes(m.id);
+      return (
+        `<label class="assignrow${on ? ' on' : ''}">` +
+        `<input type="checkbox" name="member:${esc(m.id)}" value="${esc(m.id)}"${on ? ' checked' : ''} />` +
+        avatar(domain, m.id) +
+        `<span class="assignname"><div>${esc(m.name)}${
+          m.id === me ? ' <span class="you">you</span>' : ''
+        }</div><div>${esc(m.title || m.role)}</div></span>` +
+        '</label>'
+      );
+    })
+    .join('');
   return (
-    '<div class="f"><label>Owner</label><select name="owner"><option value="">Not taken · open pool</option>' +
-    domain.workspace.members
-      .map(
-        (m) =>
-          `<option value="${esc(m.id)}" ${m.id === t.assigneeId ? 'selected' : ''}>${esc(m.name)} · ${esc(m.title)}</option>`,
-      )
-      .join('') +
-    '</select></div>' +
-    '<div class="hint" style="margin:0">Assigning sets the owner and the take time. Status changes separately, so order is never forced.</div>'
+    `<div class="assignlist">${rows || '<div class="subempty">Nobody to assign yet.</div>'}</div>` +
+    '<div class="hint" style="margin:12px 0 0">Everyone ticked is equally on the task — nobody is demoted to a watcher. Status changes separately, so order is never forced.</div>'
+  );
+}
+
+/**
+ * Who is on one subtask step.
+ *
+ * Checkboxes, like the task assign modal: several people can be on a step, and
+ * "nobody" is simply none of them ticked rather than a separate option.
+ */
+export function subAssignBody(domain: FlowDomain, t: Task, sub: Subtask): string {
+  const me = domain.workspace.me;
+  const rows = domain.workspace.members
+    .map((m) => {
+      const on = sub.assigneeIds.includes(m.id);
+      return (
+        `<label class="assignrow${on ? ' on' : ''}">` +
+        `<input type="checkbox" name="member:${esc(m.id)}" value="${esc(m.id)}"${on ? ' checked' : ''} />` +
+        avatar(domain, m.id) +
+        `<span class="assignname"><div>${esc(m.name)}${
+          m.id === me ? ' <span class="you">you</span>' : ''
+        }</div><div>${esc(m.title || m.role)}</div></span>` +
+        '</label>'
+      );
+    })
+    .join('');
+  return (
+    `<div class="subhead">${esc(t.key)} · ${esc(sub.t)}</div>` +
+    `<div class="assignlist">${rows || '<div class="subempty">Nobody to assign yet.</div>'}</div>` +
+    '<div class="hint" style="margin:12px 0 0">Tick everybody who is on this step, or nobody to leave it open. Steps take several people just like tasks do.</div>'
+  );
+}
+
+/**
+ * The step picker's actions.
+ *
+ * "Assign to me" is here rather than on the row: the row already carries a
+ * tick, the owner control and delete, and a fourth button would be noise. In
+ * the modal it is exactly where somebody looking at "whose step is this?"
+ * expects to find themselves.
+ */
+export function subAssignFooter(t: Task, sub: Subtask): string {
+  return (
+    '<button class="btn ghost" data-act="close-modal">Cancel</button>' +
+    `<button class="btn" data-act="sub-assign-me" data-id="${esc(t.id)}" data-sub="${esc(sub.id)}">Assign to me</button>` +
+    '<button class="btn primary" data-act="submit-modal">Save</button>'
   );
 }
 
@@ -489,23 +796,28 @@ export function projectBody(domain: FlowDomain): string {
 
 export function teamBody(domain: FlowDomain): string {
   const rows = domain.workspace.members
-    .map(
-      (m) =>
+    .map((m) => {
+      const meta = [m.title || m.role, m.email].filter(Boolean).join(' · ');
+      return (
         '<div class="mrow">' +
         avatar(domain, m.id) +
-        `<div class="mname"><div>${esc(m.name)}</div><div>${esc(m.title || m.role)}</div></div>` +
+        `<div class="mname"><div>${esc(m.name)}${
+          m.userId ? ' <span class="mchip">signed in</span>' : m.email ? ' <span class="mchip">invited</span>' : ''
+        }</div><div>${esc(meta)}</div></div>` +
         `<select data-act="mrole" data-id="${esc(m.id)}">${['owner', 'lead', 'member']
           .map((r) => `<option value="${r}" ${m.role === r ? 'selected' : ''}>${r}</option>`)
           .join('')}</select>` +
-        `<button class="btn ghost sm" data-act="del-member" data-id="${esc(m.id)}" title="Remove from workspace">✕</button></div>`,
-    )
+        `<button class="btn ghost sm" data-act="del-member" data-id="${esc(m.id)}" title="Remove from workspace">✕</button></div>`
+      );
+    })
     .join('');
   return (
     `<div>${rows || '<div class="subempty">Nobody here yet. Add yourself first.</div>'}</div>` +
     '<div class="sep" style="margin:14px 0"></div>' +
     '<div class="f"><label>Add a teammate</label><input type="text" id="mNew" placeholder="Name" /></div>' +
+    '<div class="f"><label>Their email · optional</label><input type="email" id="mEmail" placeholder="them@theblackit.com" /></div>' +
     '<div class="f"><label>Title · optional</label><input type="text" id="mTitle" placeholder="e.g. Frontend engineer" /></div>' +
-    '<div class="wznote">Roles are labels for now: owner, lead, member. Everyone can claim, add subtasks and update status.</div>'
+    '<div class="wznote">Add their email and it becomes their invite: the first time they sign in with that address they become this member, with their own name on everything they take. Roles are labels: owner, lead, member.</div>'
   );
 }
 
@@ -535,7 +847,7 @@ export function stepDots(step: number): string {
   return `<div class="wzdots">${[1, 2, 3].map((i) => `<i class="${i <= step ? 'on' : ''}"></i>`).join('')}</div>`;
 }
 
-export function wizardBody(wz: WizardState): string {
+export function wizardBody(wz: WizardState, signedIn = false): string {
   const key = keyFrom(wz.project);
   if (wz.step === 1) {
     return (
@@ -555,8 +867,14 @@ export function wizardBody(wz: WizardState): string {
   }
   return (
     stepDots(wz.step) +
-    `<div class="f"><label>Teammates, one name per line · optional</label><textarea id="wzTeam" rows="4" placeholder="Nithin Raj&#10;Sneha Thomas">${esc(wz.team)}</textarea></div>` +
-    '<div class="wznote">They show up in “Acting as” and can take unowned tasks. Add or remove people later from the Team button.</div>'
+    `<div class="f"><label>${
+      signedIn ? 'Teammates · name and email, one per line' : 'Teammates, one name per line · optional'
+    }</label><textarea id="wzTeam" rows="4" placeholder="${
+      signedIn ? 'Nithin Raj &lt;nithin@theblackit.com&gt;&#10;Sneha Thomas' : 'Nithin Raj&#10;Sneha Thomas'
+    }">${esc(wz.team)}</textarea></div>` +
+    (signedIn
+      ? '<div class="wznote">An email is an invitation: the first time that person signs in with it, they become this member and their name goes on everything they take. Add or change people later from the Team button.</div>'
+      : '<div class="wznote">They show up in “Acting as” and can take unowned tasks. Add or remove people later from the Team button.</div>')
   );
 }
 
@@ -614,6 +932,79 @@ export function chatGreeting(domain: FlowDomain): ChatMessage {
 /** Fallback progress percentage for tests and embeds. */
 export { percentDone, GLYPH_BRAND };
 
+/* --------------------------------- bell ---------------------------------- */
+
+const BELL_ICON =
+  '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 9a6 6 0 1 0-12 0c0 5-2 6-2 6h16s-2-1-2-6"/><path d="M10.5 20a2 2 0 0 0 3 0"/></svg>';
+
+/** What each kind of notification says. Never interpolated raw. */
+const NOTIFICATION_VERB: Record<string, string> = {
+  'task.assigned': 'put you on',
+  'subtask.assigned': 'handed you a step in',
+  'task.status': 'moved',
+};
+
+const STATUS_WORD: Record<string, string> = {
+  BLOCK: 'Blocked',
+  REVIEW: 'In Review',
+  DONE: 'Done',
+};
+
+/**
+ * The header bell and its panel.
+ *
+ * Rendered from inside the live chip's wrapper so the panel anchors to the same
+ * corner and shares the existing popover behaviour (click-outside closes it).
+ * Returns nothing without a backend: notifications are written by database
+ * triggers, so an empty bell in the browser-local build would be a promise the
+ * app cannot keep.
+ */
+export function renderBell(
+  notifications: NotificationRecord[],
+  kind: 'local' | 'supabase',
+): string {
+  if (kind !== 'supabase') return '';
+  const unread = notifications.filter((n) => n.readAt === null).length;
+  const rows = notifications.length
+    ? notifications
+        .map((n) => {
+          const verb = NOTIFICATION_VERB[n.kind] ?? n.kind;
+          const extra =
+            n.kind === 'task.status' ? STATUS_WORD[n.summary] ?? n.summary : n.summary;
+          return (
+            `<button class="notifrow${n.readAt === null ? ' unread' : ''}" data-act="notif-open" data-id="${esc(
+              n.id,
+            )}"${n.taskId ? ` data-task="${esc(n.taskId)}"` : ''}>` +
+            '<i class="notifdot" aria-hidden="true"></i>' +
+            '<span class="notifbody">' +
+            `<span class="notifwho">${esc(n.actorName || 'Someone')}</span> ${esc(verb)} ` +
+            (n.taskKey ? `<span class="key">${esc(n.taskKey)}</span>` : '') +
+            (n.taskId ? '' : ' <span class="notifgone">a task since deleted</span>') +
+            (extra ? `<span class="notifsum">${esc(extra)}</span>` : '') +
+            '</span>' +
+            `<span class="notifwhen">${esc(relAgo(n.createdAt))}</span>` +
+            '</button>'
+          );
+        })
+        .join('')
+    : '<div class="peer muted">Nothing yet. Assignments and hand-offs land here.</div>';
+
+  return (
+    `<button class="bell${unread ? ' on' : ''}" data-act="notif-toggle" aria-label="Notifications${
+      unread ? `, ${unread} unread` : ''
+    }" aria-haspopup="dialog" title="${unread ? `${unread} unread` : 'Notifications'}">` +
+    BELL_ICON +
+    (unread ? `<span class="bellcount">${unread > 9 ? '9+' : unread}</span>` : '') +
+    '</button>' +
+    '<div class="pop notifs" data-pop="notifs">' +
+    '<div class="notifhead"><span>Notifications</span>' +
+    (unread ? '<button class="btn ghost sm" data-act="notif-read-all">Mark all read</button>' : '') +
+    '</div>' +
+    `<div class="notiflist">${rows}</div>` +
+    '</div>'
+  );
+}
+
 /* ------------------------------ sync + people ----------------------------- */
 
 /** Minimal shape the feed needs; keeps render.ts free of a repository import. */
@@ -650,6 +1041,7 @@ export function renderSyncChip(
   peers: PresencePeer[],
   domain: FlowDomain,
   kind: 'local' | 'supabase',
+  notifications: NotificationRecord[] = [],
 ): string {
   const others = peers.filter((p) => p.memberId !== domain.workspace.me);
   const paused = Boolean((status as { realtimePaused?: boolean }).realtimePaused);
@@ -683,6 +1075,7 @@ export function renderSyncChip(
 
   return (
     '<div class="livewrap">' +
+    renderBell(notifications, kind) +
     `<button class="livechip ${tone}" data-act="live-menu" title="${esc(title)}" aria-haspopup="dialog">` +
     '<i class="livedot"></i>' +
     `<span>${esc(label)}</span>` +
@@ -743,6 +1136,7 @@ const ACTIVITY_VERB: Record<string, string> = {
   'task.assigned': 'assigned',
   'task.reordered': 'reordered',
   'subtask.added': 'added a step to',
+  'subtask.assigned': 'handed a step to',
   'project.created': 'created',
   'member.added': 'joined',
   'member.removed': 'was removed from',

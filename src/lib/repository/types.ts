@@ -14,11 +14,19 @@
  * which implementation is active.
  */
 
-import type { Member, Workspace } from '../types';
+import type { AuthUser, Member, Workspace } from '../types';
 
 /** A single row change delivered by the backend. */
 export interface RowChange {
-  table: 'tasks' | 'subtasks' | 'projects' | 'members' | 'activity';
+  table:
+    | 'tasks'
+    | 'subtasks'
+    | 'projects'
+    | 'members'
+    | 'activity'
+    | 'task_assignees'
+    | 'subtask_assignees'
+    | 'notifications';
   type: 'INSERT' | 'UPDATE' | 'DELETE';
   /** Row payload (for DELETE, the primary key fields). */
   row: Record<string, unknown>;
@@ -46,6 +54,28 @@ export interface PresencePeer {
   memberId: string;
   memberName: string;
   onlineAt: number;
+}
+
+/** Why somebody's bell is ringing. */
+export type NotificationKind = 'task.assigned' | 'subtask.assigned' | 'task.status';
+
+/**
+ * One entry in a member's bell.
+ *
+ * Per recipient, not per workspace — which is why it is fetched alongside the
+ * activity feed rather than living in `Workspace`.
+ */
+export interface NotificationRecord {
+  id: number;
+  kind: NotificationKind | string;
+  actorId: string | null;
+  actorName: string;
+  taskId: string | null;
+  taskKey: string;
+  summary: string;
+  createdAt: number;
+  /** Null while unread. */
+  readAt: number | null;
 }
 
 export interface SubscribeHandlers {
@@ -92,6 +122,32 @@ export interface WorkspaceRepository {
   /** Atomically reserve the next task key for a project (NE-1, NE-2, …). */
   nextTaskKey(projectId: string, fallback: () => string): Promise<string>;
 
+  /**
+   * Bind a signed-in account to the member row it belongs to.
+   *
+   * Two ways to belong: the row already names this account (`user_id` matches),
+   * or the row is an unclaimed invite whose `email` matches the account. In the
+   * second case the claim is written back, so the next sign-in finds it directly.
+   *
+   * Returns `null` when neither matches — the account is signed in but not on
+   * this workspace — and also when no workspace exists yet, because the first
+   * person through the door creates it and is bound by the setup wizard.
+   */
+  linkAccount(user: AuthUser): Promise<Member | null>;
+
+  /**
+   * Bind this account to a member row that nobody has claimed yet.
+   *
+   * Only for a workspace that has **never** been claimed by anybody — the
+   * one-time bootstrap for a team that existed before sign-in, whose member
+   * rows carry no email to invite them by. Refuses as soon as any member has a
+   * `user_id`, so the window closes the moment the first person is through, and
+   * from then on the only way in is an email invitation.
+   *
+   * Returns null when the row is unknown or was claimed in the meantime.
+   */
+  claimMember(memberId: string, user: AuthUser): Promise<Member | null>;
+
   /** Realtime (or polling) updates plus presence. Returns an unsubscribe fn. */
   subscribe(handlers: SubscribeHandlers, me: Member | null): () => void;
 
@@ -100,4 +156,15 @@ export interface WorkspaceRepository {
 
   /** The most recent activity entries, newest first. */
   recentActivity(limit: number): Promise<ActivityRecord[]>;
+
+  /**
+   * The newest notifications for one member, newest first.
+   *
+   * Scoped by member rather than by workspace: a bell is one person's, and the
+   * database refuses to hand anybody else's rows over.
+   */
+  recentNotifications(memberId: string, limit: number): Promise<NotificationRecord[]>;
+
+  /** Clear the unread mark on some entries, or on all of them for a member. */
+  markNotificationsRead(memberId: string, ids: number[] | 'all'): Promise<void>;
 }

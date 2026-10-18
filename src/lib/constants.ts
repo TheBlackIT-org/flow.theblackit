@@ -54,6 +54,8 @@ export const ICON = {
   eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>',
   pause:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M9.5 6v12M14.5 6v12"/></svg>',
+  person:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="3.4"/><path d="M5 20a7 7 0 0 1 14 0"/></svg>',
 };
 
 export const GLYPH_CHAIN =
@@ -82,11 +84,13 @@ export const ACTIONS = [
   'subs',
   'edit',
   'reassign',
+  'assign-me',
   'unassign',
   'delete',
   'menu',
   'insert',
   'compose-end',
+  'ownertoggle',
   'cancel-compose',
   'create',
   'wsmenu',
@@ -111,12 +115,24 @@ export const ACTIONS = [
   'fstatus',
   'sub-add',
   'sub-del',
+  'sub-assign',
+  'sub-assign-me',
   'chat-toggle',
   'chat-close',
   'chat-chip',
   'chat-send',
   'chat-discard',
   'chat-add',
+  'auth-github',
+  'auth-email',
+  'auth-code',
+  'auth-other',
+  'auth-retry',
+  'auth-claim',
+  'auth-signout',
+  'notif-toggle',
+  'notif-read-all',
+  'notif-open',
   'close-modal',
   'submit-modal',
 ] as const;

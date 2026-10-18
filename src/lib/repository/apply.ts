@@ -51,6 +51,10 @@ export function applyChange(ws: Workspace, change: RowChange, ctx: ApplyContext)
       return applyTask(ws, change);
     case 'subtasks':
       return applySubtask(ws, change);
+    case 'task_assignees':
+      return applyTaskAssignee(ws, change);
+    case 'subtask_assignees':
+      return applySubtaskAssignee(ws, change);
     case 'projects':
       return applyProject(ws, change);
     case 'members':
@@ -130,6 +134,9 @@ function applyTask(ws: Workspace, change: RowChange): ApplyResult {
   // their own table and their own events).
   incoming.subs = held.subs;
   incoming.open = held.open;
+  // So are assignees: they live in the join table, so a `tasks` row arrives
+  // with an empty list and would otherwise wipe everybody off the card.
+  incoming.assigneeIds = held.assigneeIds;
 
   // Every row carries `position`, so its mere presence proves nothing. Only a
   // value that differs from the one we already hold is a real reorder — and a
@@ -158,13 +165,85 @@ function applySubtask(ws: Workspace, change: RowChange): ApplyResult {
   }
 
   const sub = subtaskFromRow(change.row);
-  if (index < 0) task.subs.push(sub);
-  else task.subs[index] = sub;
+  if (index < 0) {
+    // A genuinely new step: nobody is on it yet.
+    task.subs.push(sub);
+  } else {
+    // Step owners live in the join table, so this row arrives with an empty
+    // list. Overwriting from it would empty the step on every remote edit.
+    sub.assigneeIds = task.subs[index]!.assigneeIds;
+    task.subs[index] = sub;
+  }
+  return CHANGED;
+}
+
+/* --------------------------- subtask assignees ---------------------------- */
+
+/** One person joining or leaving a subtask step. */
+function applySubtaskAssignee(ws: Workspace, change: RowChange): ApplyResult {
+  const subtaskId = str(change.row?.subtask_id ?? change.old?.subtask_id);
+  const memberId = str(change.row?.member_id ?? change.old?.member_id);
+  if (!subtaskId || !memberId) return NOTHING;
+
+  for (const task of ws.tasks) {
+    const sub = task.subs.find((s) => s.id === subtaskId);
+    if (!sub) continue;
+    const present = sub.assigneeIds.includes(memberId);
+    if (change.type === 'DELETE') {
+      if (!present) return NOTHING;
+      sub.assigneeIds = sub.assigneeIds.filter((id) => id !== memberId);
+      return CHANGED;
+    }
+    if (present) return NOTHING;
+    // Appended rather than prepended, matching what `load()` does with
+    // `assigned_at` so the two agree on who is first.
+    sub.assigneeIds.push(memberId);
+    return CHANGED;
+  }
+  return NOTHING;
+}
+
+/* ----------------------------- task assignees ----------------------------- */
+
+/**
+ * One person joining or leaving a task.
+ *
+ * The join row carries only `task_id` and `member_id`, so the change is applied
+ * as a set membership edit. Order matters to the UI (the first assignee owns the
+ * card's colour), so a new row is appended rather than inserted at the front —
+ * matching what `load()` does by sorting on `assigned_at`.
+ */
+function applyTaskAssignee(ws: Workspace, change: RowChange): ApplyResult {
+  const taskId = str(change.row?.task_id ?? change.old?.task_id);
+  const memberId = str(change.row?.member_id ?? change.old?.member_id);
+  if (!taskId || !memberId) return NOTHING;
+  const task = ws.tasks.find((t) => t.id === taskId);
+  // The task may belong to a project this client is not showing yet; the later
+  // `tasks` insert will arrive with the assignee list from the join rows.
+  if (!task) return NOTHING;
+
+  const present = task.assigneeIds.includes(memberId);
+  if (change.type === 'DELETE') {
+    if (!present) return NOTHING;
+    task.assigneeIds = task.assigneeIds.filter((id) => id !== memberId);
+    // The "took it" credit belongs to whoever is actually still on the task.
+    if (task.claimedBy === memberId) {
+      task.claimedBy = task.assigneeIds[0] ?? null;
+      task.claimedAt = task.claimedBy ? task.claimedAt : null;
+    }
+    return CHANGED;
+  }
+
+  if (present) return NOTHING;
+  task.assigneeIds.push(memberId);
+  if (task.assigneeIds.length === 1) {
+    task.claimedBy = memberId;
+    task.claimedAt = Date.now();
+  }
   return CHANGED;
 }
 
 /* -------------------------------- projects -------------------------------- */
-
 function applyProject(ws: Workspace, change: RowChange): ApplyResult {
   const id = str(change.row?.id ?? change.old?.id);
   if (!id) return NOTHING;
@@ -195,8 +274,11 @@ function applyMember(ws: Workspace, change: RowChange): ApplyResult {
     if (index < 0) return NOTHING;
     ws.members.splice(index, 1);
     ws.tasks.forEach((t) => {
-      if (t.assigneeId === id) t.assigneeId = null;
-      if (t.claimedBy === id) t.claimedBy = null;
+      if (t.assigneeIds.includes(id)) t.assigneeIds = t.assigneeIds.filter((x) => x !== id);
+      if (t.claimedBy === id) {
+        t.claimedBy = t.assigneeIds[0] ?? null;
+        t.claimedAt = t.claimedBy ? t.claimedAt : null;
+      }
     });
     if (ws.me === id) ws.me = ws.members[0]?.id ?? null;
     return CHANGED;

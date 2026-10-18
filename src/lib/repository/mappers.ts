@@ -38,6 +38,10 @@ export function memberFromRow(row: Row): Member {
     title: str(row.title),
   };
   if (row.is_agent) member.agent = true;
+  // Present from `0003_member_identity.sql`. Read defensively so a deployment
+  // that has not run it yet still loads (the columns come back undefined).
+  if (row.email !== undefined) member.email = strOrNull(row.email);
+  if (row.user_id !== undefined) member.userId = strOrNull(row.user_id);
   return member;
 }
 
@@ -64,7 +68,11 @@ export function taskFromRow(row: Row): Task {
     typeId: str(row.type_id, 'tt3'),
     stage: str(row.stage, 'New'),
     status: str(row.status, 'TODO') as StatusId,
-    assigneeId: strOrNull(row.assignee_id),
+    // Assignees live in their own table, so they are attached by `load()`
+    // rather than read from a column here. The legacy `tasks.assignee_id`
+    // column survives the transition but is deliberately ignored: two sources
+    // of truth for the same fact would drift the first time one was written.
+    assigneeIds: [],
     priority: str(row.priority, 'normal') as PriorityId,
     estimate: Number(row.estimate ?? 3),
     dueAt: ms(row.due_at),
@@ -80,12 +88,44 @@ export function taskFromRow(row: Row): Task {
   };
 }
 
+/** One row of the task ⇄ member join table. */
+export interface TaskAssigneeRow {
+  taskId: string;
+  memberId: string;
+}
+
+export function taskAssigneeFromRow(row: Row): TaskAssigneeRow {
+  return { taskId: str(row.task_id), memberId: str(row.member_id) };
+}
+
+export function taskAssigneeToRow(a: TaskAssigneeRow): Row {
+  // `assigned_at` and `assigned_by` are filled in by the database: the client
+  // does not track when or by whom each person was added, and a trigger can
+  // read the actor from the session rather than trusting the payload.
+  return { task_id: a.taskId, member_id: a.memberId };
+}
+
 export function subtaskFromRow(row: Row): Subtask {
   return {
     id: str(row.id),
     t: str(row.text),
     done: Boolean(row.done),
+    // Attached by `load()` from `subtask_assignees`. The legacy
+    // `subtasks.assignee_id` column survives the transition but is ignored
+    // here: two sources of truth for the same fact would drift.
+    assigneeIds: [],
   };
+}
+
+/** One row of the subtask ⇄ member join table. */
+export interface SubtaskAssigneeRow {
+  subtaskId: string;
+  memberId: string;
+}
+
+export function subtaskAssigneeToRow(a: SubtaskAssigneeRow): Row {
+  // `assigned_at` and `assigned_by` are filled in by the database.
+  return { subtask_id: a.subtaskId, member_id: a.memberId };
 }
 
 /* -------------------------------- → row ---------------------------------- */
@@ -98,6 +138,10 @@ export function memberToRow(m: Member, workspaceId: string): Row {
     role: m.role,
     title: m.title,
     is_agent: Boolean(m.agent),
+    // The invite address. `user_id` is deliberately absent: it is set by the
+    // one-off claim (`linkAccount`) and must never ride along on an ordinary
+    // member edit, or a diff-flush would rewrite the binding.
+    email: m.email ?? null,
   };
 }
 
@@ -139,7 +183,8 @@ export function taskToRow(t: Task, position: number): Row {
     type_id: t.typeId,
     priority: t.priority,
     estimate: t.estimate,
-    assignee_id: t.assigneeId,
+    // No `assignee_id`: the join table owns assignment now. Omitting the column
+    // leaves the legacy value untouched instead of clobbering it on every save.
     due_at: iso(t.dueAt),
     depends_on: t.dependsOn,
     created_by: t.createdBy,
@@ -151,5 +196,13 @@ export function taskToRow(t: Task, position: number): Row {
 }
 
 export function subtaskToRow(s: Subtask, taskId: string, position: number): Row {
-  return { id: s.id, task_id: taskId, text: s.t, done: s.done, position };
+  return {
+    id: s.id,
+    task_id: taskId,
+    text: s.t,
+    done: s.done,
+    position,
+    // No `assignee_id`: the join table owns step assignment now. Omitting the
+    // column leaves the legacy value untouched instead of clobbering it.
+  };
 }

@@ -74,7 +74,7 @@ function toUuidSpace(ws: ReturnType<typeof liveWorkspace>) {
   ws.projects.forEach((p) => remap(p.id));
   ws.tasks.forEach((t) => {
     remap(t.id);
-    remap(t.assigneeId);
+    t.assigneeIds.forEach((id) => remap(id));
     remap(t.claimedBy);
     remap(t.createdBy);
   });
@@ -85,7 +85,7 @@ function toUuidSpace(ws: ReturnType<typeof liveWorkspace>) {
     ...t,
     id: remap(t.id)!,
     projectId: remap(t.projectId)!,
-    assigneeId: remap(t.assigneeId),
+    assigneeIds: t.assigneeIds.map((id) => remap(id)!),
     claimedBy: remap(t.claimedBy),
     createdBy: remap(t.createdBy),
   }));
@@ -142,6 +142,15 @@ async function primed(prepared?: ReturnType<typeof liveWorkspace>) {
         position: i,
       })),
     ),
+    // So does assignment. `assigned_at` orders the list, so it is seeded in
+    // array order to keep a task's first assignee first.
+    task_assignees: live.tasks.flatMap((t) =>
+      t.assigneeIds.map((memberId, i) => ({
+        task_id: t.id,
+        member_id: memberId,
+        assigned_at: new Date(NOW + i).toISOString(),
+      })),
+    ),
   });
   const repository = repo(fake);
   const loaded = (await repository.load())!;
@@ -183,7 +192,7 @@ describe('load', () => {
     });
     const loaded = (await repo(fake).load())!;
     const task = loaded.tasks.find((t) => t.id === first.id)!;
-    expect(task.subs).toEqual([{ id: uuidFor('s-1'), t: 'A step', done: true }]);
+    expect(task.subs).toEqual([{ id: uuidFor('s-1'), t: 'A step', done: true, assigneeIds: [] }]);
   });
 
   it('surfaces a read failure instead of pretending the workspace is empty', async () => {
@@ -231,7 +240,7 @@ describe('flush — diffing', () => {
   it('tags every write with the mutation id so the echo can be ignored', async () => {
     const { fake, repository, loaded } = await primed();
     loaded.tasks[0]!.title = 'Renamed';
-    loaded.tasks[0]!.subs = [{ id: 's-new', t: 'Step', done: false }];
+    loaded.tasks[0]!.subs = [{ id: 's-new', t: 'Step', done: false, assigneeIds: [] }];
     loaded.members[0]!.title = 'Chief';
     loaded.projects[0]!.name = 'Renamed project';
 
@@ -268,8 +277,8 @@ describe('flush — diffing', () => {
     const keepId = uuidFor('s-a');
     const removeId = uuidFor('s-b');
     ws.tasks[0]!.subs = [
-      { id: keepId, t: 'Keep', done: false },
-      { id: removeId, t: 'Remove', done: false },
+      { id: keepId, t: 'Keep', done: false, assigneeIds: [] },
+      { id: removeId, t: 'Remove', done: false, assigneeIds: [] },
     ];
     const { fake, repository, loaded } = await primed(ws);
     // The subtasks arrive from the server nested under their task.
@@ -378,7 +387,18 @@ describe('subscribe', () => {
     repository.subscribe({ onChange, onState: vi.fn(), onPresence: vi.fn() }, memberFromRow({ id: 'm1', name: 'Arjun' }));
 
     const tables = fake.channels[0]!.handlers.map((h) => h.table).sort();
-    expect(tables).toEqual(['activity', 'members', 'projects', 'subtasks', 'tasks']);
+    // Assignment has its own table, so a change to who is on a task arrives as
+    // a `task_assignees` event rather than riding along with the task row.
+    expect(tables).toEqual([
+      'activity',
+      'members',
+      'notifications',
+      'projects',
+      'subtask_assignees',
+      'subtasks',
+      'task_assignees',
+      'tasks',
+    ]);
   });
 
   it('forwards a row event to the app', async () => {
@@ -730,7 +750,7 @@ describe('a deleted workspace heals itself', () => {
     // that no longer exists. Without recovery every later write fails and the
     // user has to reload the page.
     const fake = fakeSupabase({ workspaces: [{ id: WS }], members: [], projects: [], tasks: [] });
-    const supabase = new SupabaseRepository(fake, 'BlackIT Flow');
+    const supabase = repo(fake);
     const ws: Workspace = {
       ...emptyWorkspace(),
       mode: 'live',
@@ -765,7 +785,7 @@ describe('a new project carries a task counter', () => {
     // made the insert fail with "null value in column task_counter", so no
     // project created in the app could ever be saved.
     const fake = fakeSupabase({ workspaces: [{ id: WS }], members: [], projects: [], tasks: [] });
-    const supabase = new SupabaseRepository(fake, 'BlackIT Flow');
+    const supabase = repo(fake);
     const ws: Workspace = {
       ...emptyWorkspace(),
       mode: 'live',
@@ -784,5 +804,277 @@ describe('a new project carries a task counter', () => {
     expect(projectToRow(p, 'ws')).not.toHaveProperty('task_counter');
     expect(projectToRow(p, 'ws', true)).toHaveProperty('task_counter', 0);
     expect(projectToRow({ ...p, taskCounter: 7 }, 'ws')).toHaveProperty('task_counter', 7);
+  });
+});
+
+/**
+ * Assignment storage.
+ *
+ * A task's people are rows in `task_assignees`, not a column on the task. The
+ * two halves of that — reading a task's people back, and writing only the
+ * memberships that actually changed — are invisible in the UI and impossible to
+ * eyeball, so they are pinned here.
+ */
+describe('assignment is a join table', () => {
+  it('reads a task’s people back, oldest first', async () => {
+    const ws = liveWorkspace();
+    const { ws: live } = toUuidSpace(ws);
+    const task = live.tasks.find((t) => t.assigneeIds.length)!;
+    const first = task.assigneeIds[0]!;
+
+    const { loaded } = await primed(ws);
+    const read = loaded.tasks.find((t) => t.id === task.id)!;
+
+    expect(read.assigneeIds).toEqual(task.assigneeIds);
+    // Order is by `assigned_at`, so the first person put on a task stays first
+    // — which is what owns the card's colour.
+    expect(read.assigneeIds[0]).toBe(first);
+  });
+
+  it('orders assignees by assigned_at, not by the order rows come back', async () => {
+    const A = uuidFor('member-a');
+    const B = uuidFor('member-b');
+    const T = uuidFor('task-a');
+    const fake = fakeSupabase({
+      workspaces: [{ id: WS }],
+      members: [
+        { id: A, workspace_id: WS, name: 'First', role: 'member', title: '', is_agent: false },
+        { id: B, workspace_id: WS, name: 'Second', role: 'member', title: '', is_agent: false },
+      ],
+      projects: [{ id: uuidFor('proj-a'), workspace_id: WS, key: 'AA', name: 'P', product: '' }],
+      tasks: [
+        {
+          id: T,
+          project_id: uuidFor('proj-a'),
+          key: 'AA-1',
+          position: 0,
+          title: 'Shared',
+          status: 'TODO',
+          created_at: new Date(NOW).toISOString(),
+        },
+      ],
+      // Deliberately returned newest-first, the way an unordered select can.
+      task_assignees: [
+        { task_id: T, member_id: B, assigned_at: new Date(NOW + 5000).toISOString() },
+        { task_id: T, member_id: A, assigned_at: new Date(NOW).toISOString() },
+      ],
+    });
+
+    const loaded = (await repo(fake).load())!;
+    expect(loaded.tasks[0]!.assigneeIds).toEqual([A, B]);
+  });
+
+  it('inserts one membership row per newly added person, tagged for echo suppression', async () => {
+    const { fake, repository, loaded, ws } = await primed();
+    const task = loaded.tasks[0]!;
+    const joiner = ws.members.find((m) => !task.assigneeIds.includes(m.id))!;
+    task.assigneeIds = [...task.assigneeIds, joiner.id];
+
+    await repository.flush(loaded, 'mut-add');
+
+    // `writesTo` returns one entry per call; the payload is the batch.
+    const written = (writesTo(fake, 'task_assignees', 'upsert') as Array<
+      Array<Record<string, unknown>>
+    >).flat();
+    expect(written).toEqual([{ task_id: task.id, member_id: joiner.id, mutation_id: 'mut-add' }]);
+    // `assigned_at` and `assigned_by` are the database's job, not the client's.
+    expect(written[0]).not.toHaveProperty('assigned_at');
+    expect(written[0]).not.toHaveProperty('assigned_by');
+  });
+
+  it('deletes exactly the membership that went away, scoped to its task', async () => {
+    const { fake, repository, loaded } = await primed();
+    const task = loaded.tasks.find((t) => t.assigneeIds.length === 1)!;
+    const leaver = task.assigneeIds[0]!;
+    task.assigneeIds = [];
+
+    await repository.flush(loaded, 'mut-drop');
+
+    const removed = fake.calls.filter((c) => c.table === 'task_assignees' && c.method === 'delete');
+    expect(removed).toHaveLength(1);
+    expect(removed[0]!.filters).toEqual([
+      { op: 'eq', column: 'task_id', value: task.id },
+      { op: 'in', column: 'member_id', value: [leaver] },
+    ]);
+  });
+
+  it('moves a person between tasks without removing them from both', async () => {
+    // A single `in` over both columns would be a cross product, and would take
+    // the mover off the task they were just added to.
+    const { fake, repository, loaded } = await primed();
+    const withPeople = loaded.tasks.filter((t) => t.assigneeIds.length);
+    const from = withPeople[0]!;
+    const to = withPeople[1]!;
+    const mover = from.assigneeIds[0]!;
+
+    from.assigneeIds = from.assigneeIds.slice(1);
+    to.assigneeIds = [...to.assigneeIds, mover];
+
+    await repository.flush(loaded, 'mut-move');
+
+    const removed = fake.calls.filter((c) => c.table === 'task_assignees' && c.method === 'delete');
+    expect(removed).toHaveLength(1);
+    expect(removed[0]!.filters.some((f) => f.column === 'task_id' && f.value === to.id)).toBe(false);
+
+    const written = (writesTo(fake, 'task_assignees', 'upsert') as Array<
+      Array<Record<string, unknown>>
+    >).flat();
+    expect(written).toEqual([{ task_id: to.id, member_id: mover, mutation_id: 'mut-move' }]);
+  });
+
+  it('never writes the legacy assignee_id, so the two cannot drift', async () => {
+    // The column still exists so a stale tab keeps working. The new client must
+    // not write it, or the old and new sources of truth would fight.
+    const { fake, repository, loaded } = await primed();
+    const task = loaded.tasks[0]!;
+    task.title = 'Renamed';
+    task.assigneeIds = [...task.assigneeIds, loaded.members[4]!.id];
+
+    await repository.flush(loaded, 'mut-legacy');
+
+    const rows = writesTo(fake, 'tasks', 'upsert') as Array<Record<string, unknown>>;
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row, 'a task row must not carry assignee_id').not.toHaveProperty('assignee_id');
+    }
+  });
+
+  it('writes step owners to their own table, not the subtask row', async () => {
+    const { fake, repository, loaded } = await primed();
+    const task = loaded.tasks.find((t) => t.subs.length)!;
+    const sub = task.subs[0]!;
+    sub.assigneeIds = [loaded.members[3]!.id, loaded.members[4]!.id];
+
+    await repository.flush(loaded, 'mut-step');
+
+    const written = (writesTo(fake, 'subtask_assignees', 'upsert') as Array<
+      Array<Record<string, unknown>>
+    >).flat();
+    expect(written).toEqual([
+      { subtask_id: sub.id, member_id: loaded.members[3]!.id, mutation_id: 'mut-step' },
+      { subtask_id: sub.id, member_id: loaded.members[4]!.id, mutation_id: 'mut-step' },
+    ]);
+
+    // The subtask row must not carry the legacy column: the join table owns
+    // step assignment now, and writing both would let them drift.
+    const rows = (writesTo(fake, 'subtasks', 'upsert') as Array<Array<Record<string, unknown>>>).flat();
+    const row = rows.find((r) => r.id === sub.id);
+    if (row) expect(row).not.toHaveProperty('assignee_id');
+  });
+
+  it('reads step owners back, oldest first', async () => {
+    const { loaded } = await primed();
+    const task = loaded.tasks.find((t) => t.subs.length)!;
+    const sub = task.subs[0]!;
+    expect(Array.isArray(sub.assigneeIds)).toBe(true);
+  });
+
+  it('removes a step owner scoped to their step', async () => {
+    const { fake, repository, loaded } = await primed();
+    const task = loaded.tasks.find((t) => t.subs.length)!;
+    const sub = task.subs[0]!;
+    sub.assigneeIds = [loaded.members[3]!.id, loaded.members[4]!.id];
+    await repository.flush(loaded, 'mut-step-add');
+
+    sub.assigneeIds = [loaded.members[4]!.id];
+    await repository.flush(loaded, 'mut-step-drop');
+
+    const removed = fake.calls.filter(
+      (c) => c.table === 'subtask_assignees' && c.method === 'delete',
+    );
+    expect(removed).toHaveLength(1);
+    expect(removed[0]!.filters).toEqual([
+      { op: 'eq', column: 'subtask_id', value: sub.id },
+      { op: 'in', column: 'member_id', value: [loaded.members[3]!.id] },
+    ]);
+  });
+
+  it('does not touch the database when assignment is unchanged', async () => {
+    const { fake, repository, loaded } = await primed();
+    await repository.flush(loaded, 'mut-noop');
+    expect(writesTo(fake, 'task_assignees')).toEqual([]);
+    const deletes = fake.calls.filter((c) => c.table === 'task_assignees' && c.method === 'delete');
+    expect(deletes).toEqual([]);
+  });
+});
+
+/**
+ * The bell.
+ *
+ * Notifications are per recipient and written by triggers, so the client's only
+ * jobs are to fetch *one* member's rows and to clear the unread mark. Getting
+ * the first wrong would show somebody else's work; getting the second wrong
+ * would leave a badge that never goes away.
+ */
+describe('notifications', () => {
+  const ME = uuidFor('n-me');
+  const OTHER = uuidFor('n-other');
+  const T = uuidFor('n-task');
+
+  function bell() {
+    const fake = fakeSupabase({
+      workspaces: [{ id: WS }],
+      members: [
+        { id: ME, workspace_id: WS, name: 'Arjun', role: 'owner', title: '', user_id: 'auth-1' },
+        { id: OTHER, workspace_id: WS, name: 'Sneha', role: 'member', title: '', user_id: 'auth-2' },
+      ],
+      notifications: [
+        { id: 1, workspace_id: WS, recipient_id: ME, actor_name: 'Sneha', kind: 'task.assigned', task_id: T, task_key: 'NE-1', summary: '', created_at: new Date(NOW - 1000).toISOString(), read_at: null },
+        { id: 2, workspace_id: WS, recipient_id: ME, actor_name: 'Rahul', kind: 'task.status', task_id: T, task_key: 'NE-1', summary: 'BLOCK', created_at: new Date(NOW).toISOString(), read_at: new Date(NOW).toISOString() },
+        { id: 3, workspace_id: WS, recipient_id: OTHER, actor_name: 'Somebody Else', kind: 'task.assigned', task_id: T, task_key: 'NE-1', summary: '', created_at: new Date(NOW).toISOString(), read_at: null },
+      ],
+    });
+    return { fake, repository: repo(fake) };
+  }
+
+  it('returns one member’s rows, newest first', async () => {
+    const { repository } = bell();
+    const rows = await repository.recentNotifications(ME, 20);
+    expect(rows.map((n) => n.id)).toEqual([2, 1]);
+    expect(rows[0]).toMatchObject({ kind: 'task.status', actorName: 'Rahul', summary: 'BLOCK' });
+    expect(rows[1]!.readAt).toBeNull();
+  });
+
+  it('never returns another member’s notifications', async () => {
+    const { repository } = bell();
+    const rows = await repository.recentNotifications(ME, 20);
+    expect(rows.some((n) => n.actorName === 'Somebody Else')).toBe(false);
+    // And the filter really is on recipient_id, not on something incidental.
+    expect((await repository.recentNotifications(OTHER, 20)).map((n) => n.id)).toEqual([3]);
+  });
+
+  it('returns nothing without a member, rather than everybody’s rows', async () => {
+    const { repository } = bell();
+    expect(await repository.recentNotifications('', 20)).toEqual([]);
+  });
+
+  it('marks one entry read', async () => {
+    const { fake, repository } = bell();
+    await repository.markNotificationsRead(ME, [1]);
+    const stored = fake.tables.notifications?.find((n) => (n as { id: number }).id === 1);
+    expect((stored as { read_at: unknown }).read_at).not.toBeNull();
+    // Only that one: the other member's unread row is untouched.
+    expect(fake.failures.size).toBe(0);
+  });
+
+  it('marks everything unread as read', async () => {
+    const { fake, repository } = bell();
+    await repository.markNotificationsRead(ME, 'all');
+
+    const mine = (fake.tables.notifications ?? []).filter(
+      (n) => (n as { recipient_id: string }).recipient_id === ME,
+    );
+    expect(mine.every((n) => (n as { read_at: unknown }).read_at !== null)).toBe(true);
+    // Somebody else's unread row is not swept up by "all".
+    const theirs = (fake.tables.notifications ?? []).find(
+      (n) => (n as { recipient_id: string }).recipient_id === OTHER,
+    );
+    expect((theirs as { read_at: unknown }).read_at).toBeNull();
+  });
+
+  it('does nothing for an empty id list', async () => {
+    const { fake, repository } = bell();
+    await repository.markNotificationsRead(ME, []);
+    expect(fake.calls.some((c) => c.table === 'notifications' && c.method === 'update')).toBe(false);
   });
 });

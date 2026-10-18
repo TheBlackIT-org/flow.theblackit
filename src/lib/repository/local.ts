@@ -9,10 +9,11 @@
 
 import { STORAGE_KEY } from '../constants';
 import { normalise } from '../domain';
-import type { Workspace } from '../types';
+import type { AuthUser, Member, Workspace } from '../types';
 import type {
   ActivityEntry,
   ActivityRecord,
+  NotificationRecord,
   SubscribeHandlers,
   WorkspaceRepository,
 } from './types';
@@ -62,7 +63,8 @@ export class LocalRepository implements WorkspaceRepository {
     return ws;
   }
 
-  async flush(ws: Workspace): Promise<void> {
+  async flush(ws: Workspace, _mutationId?: string): Promise<void> {
+    void _mutationId;
     try {
       this.storage?.setItem(STORAGE_KEY, JSON.stringify(ws));
     } catch {
@@ -74,6 +76,19 @@ export class LocalRepository implements WorkspaceRepository {
     // No shared sequence locally, so the client-side count stays authoritative.
     void projectId;
     return fallback();
+  }
+
+  async linkAccount(_user: AuthUser): Promise<Member | null> {
+    // There is no sign-in without a backend, so nothing is ever bound here and
+    // the app keeps the *Acting as* picker this repository was built around.
+    void _user;
+    return null;
+  }
+
+  async claimMember(_memberId: string, _user: AuthUser): Promise<Member | null> {
+    void _memberId;
+    void _user;
+    return null;
   }
 
   subscribe(_handlers: SubscribeHandlers, _me: unknown): () => void {
@@ -96,6 +111,25 @@ export class LocalRepository implements WorkspaceRepository {
 
   async recentActivity(limit: number): Promise<ActivityRecord[]> {
     return this.activity.slice(0, limit);
+  }
+
+  /**
+   * There is no bell without a backend.
+   *
+   * Notifications are written by database triggers, so a browser-local
+   * workspace has none to show — the app hides the bell rather than presenting
+   * an empty one that can never fill.
+   */
+  async recentNotifications(_memberId: string, _limit: number): Promise<NotificationRecord[]> {
+    void _memberId;
+    void _limit;
+    return [];
+  }
+
+  async markNotificationsRead(_memberId: string, _ids: number[] | 'all'): Promise<void> {
+    void _memberId;
+    void _ids;
+    /* nothing to mark */
   }
 
   /**

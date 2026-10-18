@@ -6,17 +6,24 @@
 import { describe, expect, it } from 'vitest';
 import { FlowDomain, seed } from '../src/lib/domain';
 import {
+  accountAvatar,
+  projectMenu,
+  renderAccount,
+  renderAuthScreen,
+  renderBell,
   renderChain,
   renderChat,
   renderControls,
   renderHeadProgress,
   renderSubBar,
   renderWelcome,
+  subAssignBody,
   teamBody,
   editTaskBody,
   previewHtml,
   type ChatState,
 } from '../src/lib/render';
+import type { AuthUser } from '../src/lib/types';
 
 const PAYLOAD = '<img src=x onerror="window.__pwned=1">';
 const QUOTE_BREAK = `" onmouseover="window.__pwned=2" x="`;
@@ -30,12 +37,15 @@ function poisoned(): FlowDomain {
   ws.projects[0]!.product = QUOTE_BREAK;
   ws.members[0]!.name = PAYLOAD;
   ws.members[0]!.title = SCRIPT;
+  // The invite address is echoed back on the team screen, on the "not invited"
+  // card and in the ⋯ menu, so it has to travel the same escaping path.
+  ws.members[0]!.email = QUOTE_BREAK;
   ws.types[0]!.name = PAYLOAD;
   d.workspace.tasks.forEach((t, i) => {
     t.title = `${PAYLOAD}${i}`;
     t.description = QUOTE_BREAK;
     t.stage = SCRIPT;
-    t.subs = [{ id: `s-${i}`, t: PAYLOAD, done: false }];
+    t.subs = [{ id: `s-${i}`, t: PAYLOAD, done: false, assigneeIds: [] }];
   });
   return d;
 }
@@ -110,6 +120,80 @@ describe('hostile user input stays inert', () => {
     // A blocked-task listing interpolates keys and titles into the transcript.
     const r = d.reply('what is blocked?');
     expectInert(r.html, 'assistant answer');
+  });
+});
+
+describe('hostile account data stays inert', () => {
+  const HOSTILE: AuthUser = { id: 'u-1', email: PAYLOAD, name: SCRIPT, avatarUrl: null };
+
+  it('escapes every step of the sign-in screen', () => {
+    expectInert(renderAuthScreen({ step: 'signin', email: PAYLOAD, message: SCRIPT, account: null }), 'auth signin');
+    expectInert(renderAuthScreen({ step: 'sent', email: QUOTE_BREAK, message: PAYLOAD, account: null }), 'auth sent');
+    expectInert(
+      renderAuthScreen({ step: 'not-invited', email: '', message: PAYLOAD, account: HOSTILE }),
+      'auth not invited',
+    );
+    expectInert(
+      renderAuthScreen({ step: 'error', email: '', message: QUOTE_BREAK, account: HOSTILE }),
+      'auth error',
+    );
+  });
+
+  it('escapes the signed-in header chip and the ⋯ menu', () => {
+    // The account name and email reach both, straight from the provider.
+    expectInert(renderAccount(HOSTILE), 'account chip');
+    expectInert(projectMenu(HOSTILE), 'account menu');
+    expectInert(accountAvatar(HOSTILE), 'account avatar');
+  });
+
+  it('escapes invite addresses on the team screen', () => {
+    expectInert(teamBody(poisoned()), 'team invites');
+  });
+
+  it('escapes the step picker and the step owner on a card', () => {
+    const d = poisoned();
+    const t = d.workspace.tasks[0]!;
+    // Unassigned first, then with a hostile member on the step: the row draws
+    // their initials and their name in a title attribute.
+    expectInert(subAssignBody(d, t, t.subs[0]!), 'step picker');
+    t.subs[0]!.assigneeIds = [d.workspace.members[0]!.id];
+    expectInert(renderChain(d), 'card with an assigned step');
+    expectInert(subAssignBody(d, t, t.subs[0]!), 'step picker with an owner');
+  });
+
+  it('escapes the notification bell', () => {
+    // Every field here comes from another account: the actor names themselves,
+    // and the summary is a subtask's text or a status code.
+    expectInert(
+      renderBell(
+        [
+          {
+            id: 1,
+            kind: 'task.assigned',
+            actorId: null,
+            actorName: PAYLOAD,
+            taskId: 't1',
+            taskKey: QUOTE_BREAK,
+            summary: SCRIPT,
+            createdAt: Date.now(),
+            readAt: null,
+          },
+          {
+            id: 2,
+            kind: 'subtask.assigned',
+            actorId: null,
+            actorName: SCRIPT,
+            taskId: null,
+            taskKey: '',
+            summary: PAYLOAD,
+            createdAt: Date.now(),
+            readAt: null,
+          },
+        ],
+        'supabase',
+      ),
+      'bell',
+    );
   });
 });
 

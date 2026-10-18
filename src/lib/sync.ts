@@ -64,8 +64,25 @@ export interface SyncStatus {
   realtimePaused: boolean;
 }
 
-export interface SyncCallbacks {
-  /**
+/**
+ * Whether two snapshots describe the same board.
+ *
+ * `resync` copies every view-only field from the live workspace before this is
+ * called, so they compare equal by construction; `enter` is a one-shot
+ * animation flag and is ignored. Comparing the whole shape rather than a list
+ * of fields is deliberate: missing a field here would mean silently *not*
+ * showing a teammate's change, whereas an over-sensitive comparison only costs
+ * the re-render we were already doing.
+ */
+export function sameWorkspace(a: Workspace, b: Workspace): boolean {
+  return canonical(a) === canonical(b);
+}
+
+function canonical(ws: Workspace): string {
+  return JSON.stringify({ ...ws, enter: null });
+}
+
+export interface SyncCallbacks {  /**
    * The workspace changed underneath us and the UI must re-render. When a
    * replacement snapshot is supplied the app adopts it; otherwise the existing
    * workspace was mutated in place.
@@ -73,6 +90,8 @@ export interface SyncCallbacks {
   onWorkspaceChanged(replacement?: Workspace): void;
   /** An `activity` row landed; the app refetches the feed. */
   onActivityChanged(): void;
+  /** A `notifications` row landed; the app refetches the bell. */
+  onNotificationsChanged(): void;
   onStatus(status: SyncStatus): void;
   onPresence(peers: PresencePeer[]): void;
 }
@@ -374,11 +393,16 @@ export class SyncController {
     // A local playground is not a participant in the shared workspace.
     if (ws.mode === 'demo') return;
 
-    // The audit feed is not workspace state: refetch it rather than patch it.
-    if (change.table === 'activity') {
+    // Neither of these is workspace state: they are fetched whole rather than
+    // patched, so a change is a signal to refetch rather than a diff to apply.
+    // Patching a bell incrementally would also have to reconstruct "which rows
+    // are mine and unread" from a single row event, which is exactly the kind
+    // of guess that gets a badge wrong.
+    if (change.table === 'activity' || change.table === 'notifications') {
       const tag = String(change.row?.mutation_id ?? '');
       if (tag && this.ownMutationIds.has(tag)) return;
-      this.callbacks.onActivityChanged();
+      if (change.table === 'activity') this.callbacks.onActivityChanged();
+      else this.callbacks.onNotificationsChanged();
       return;
     }
 
@@ -467,6 +491,16 @@ export class SyncController {
       });
       sortByServerOrder(fresh, fresh.tasks.map((t) => ({ id: t.id, position: t.position ?? 0 })));
       primePositions(fresh);
+
+      // Nothing has actually changed. Adopting an identical snapshot re-renders
+      // the whole board for no reason — and a re-render is not free: it is the
+      // moment a half-typed composer, an open select and the focus are at risk.
+      // The heartbeat fires every minute, so this path has to be a no-op when
+      // there is nothing to say.
+      if (sameWorkspace(fresh, ws)) {
+        this.publish({ state: 'live', lastSyncedAt: Date.now(), error: null });
+        return;
+      }
 
       this.callbacks.onWorkspaceChanged(fresh);
       this.publish({ state: 'live', lastSyncedAt: Date.now(), error: null });

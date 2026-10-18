@@ -13,6 +13,7 @@ import {
   memberToRow,
   projectToRow,
   subtaskToRow,
+  taskAssigneeToRow,
   taskToRow,
 } from '../src/lib/repository/mappers';
 
@@ -24,10 +25,19 @@ const LATER_SQL = readdirSync(new URL('../supabase/migrations', import.meta.url)
   .sort()
   .map((f) => readFileSync(new URL(`../supabase/migrations/${f}`, import.meta.url), 'utf8'));
 
-/** Column names declared for a table in the migration. */
+/**
+ * Column names declared for a table.
+ *
+ * Reads `0001_init.sql` **and** every later migration: the schema a client
+ * actually talks to is the sum of all of them, so a column added by an ALTER —
+ * or a whole table added later — is as declared as one in the original CREATE.
+ * Only counting the first file made a legitimate new column (`members.email`)
+ * look like drift, and left later tables invisible to this suite entirely.
+ */
 function columnsOf(table: string): Set<string> {
-  const match = SQL.match(new RegExp(`create table if not exists ${table} \\(([\\s\\S]*?)\\n\\);`));
-  if (!match) throw new Error(`table ${table} not found in the migration`);
+  const create = new RegExp(`create table if not exists ${table} \\(([\\s\\S]*?)\\n\\);`);
+  const match = SQL.match(create) ?? LATER_SQL.map((sql) => sql.match(create)).find(Boolean);
+  if (!match) throw new Error(`table ${table} not found in any migration`);
   const columns = new Set<string>();
   for (const line of match[1]!.split('\n')) {
     const trimmed = line.trim();
@@ -35,8 +45,15 @@ function columnsOf(table: string): Set<string> {
     const name = trimmed.split(/\s+/)[0];
     if (name && /^[a-z_]+$/.test(name)) columns.add(name);
   }
+  for (const sql of LATER_SQL) {
+    const added = new RegExp(`alter table ${table}\\s+add column if not exists ([a-z_]+)`, 'gi');
+    for (const m of sql.matchAll(added)) columns.add(m[1]!);
+  }
   return columns;
 }
+
+/** Every migration's text, for assertions that span all of them. */
+const ALL_SQL = [SQL, ...LATER_SQL].join('\n');
 
 const WS_ID = '11111111-1111-1111-1111-111111111111';
 
@@ -76,13 +93,14 @@ describe('mapper rows only use declared columns', () => {
     t.position = i;
   });
   const task = ws.tasks[0]!;
-  task.subs = [{ id: 's-1', t: 'A step', done: false }];
+  task.subs = [{ id: 's-1', t: 'A step', done: false, assigneeIds: [] }];
 
   const cases: Array<[string, Record<string, unknown>]> = [
     ['members', memberToRow(ws.members[0]!, WS_ID)],
     ['projects', projectToRow(ws.projects[0]!, WS_ID)],
     ['tasks', taskToRow(task, 3)],
     ['subtasks', subtaskToRow(task.subs[0]!, task.id, 0)],
+    ['task_assignees', taskAssigneeToRow({ taskId: task.id, memberId: ws.members[0]!.id })],
   ];
 
   it.each(cases)('%s row matches the declared columns', (table, row) => {
@@ -105,15 +123,155 @@ describe('mapper rows only use declared columns', () => {
     // The client tags every row it writes with a mutation id. If a table lacks
     // the column, PostgREST rejects the whole upsert and the write is lost —
     // which is exactly what happened to `members` and `projects`.
-    for (const table of ['tasks', 'subtasks', 'projects', 'members', 'activity']) {
-      const declared =
-        columnsOf(table).has('mutation_id') ||
-        // Later migrations may add it; both files count as the schema.
-        LATER_SQL.some((sql) =>
-          new RegExp(`alter table ${table}\\s+add column if not exists mutation_id`, 'i').test(sql),
-        );
-      expect(declared, `${table} is written with a mutation_id but has no column`).toBe(true);
+    for (const table of ['tasks', 'subtasks', 'projects', 'members', 'activity', 'task_assignees']) {
+      expect(columnsOf(table).has('mutation_id'), `${table} is written with a mutation_id but has no column`).toBe(
+        true,
+      );
     }
+  });
+
+  it('declares the assignment join table', () => {
+    // A task can have several assignees, so membership lives in its own table.
+    // A missing column here is a silent failure: the client upserts a row
+    // PostgREST rejects, and assignment simply stops syncing.
+    expect(ALL_SQL).toContain('create table if not exists task_assignees');
+    const columns = columnsOf('task_assignees');
+    for (const column of ['task_id', 'member_id', 'assigned_at', 'assigned_by', 'mutation_id']) {
+      expect(columns.has(column), `task_assignees.${column} missing`).toBe(true);
+    }
+    // A composite primary key, so the same person cannot be added twice.
+    expect(ALL_SQL).toMatch(/primary key \(task_id, member_id\)/i);
+  });
+
+  it('declares the step-assignment join table', () => {
+    // A step takes several people, the same shape as a task — so the same table
+    // shape, and the same silent failure if a column is missing.
+    expect(ALL_SQL).toContain('create table if not exists subtask_assignees');
+    const columns = columnsOf('subtask_assignees');
+    for (const column of ['subtask_id', 'member_id', 'assigned_at', 'assigned_by', 'mutation_id']) {
+      expect(columns.has(column), `subtask_assignees.${column} missing`).toBe(true);
+    }
+    expect(ALL_SQL).toMatch(/primary key \(subtask_id, member_id\)/i);
+    expect(ALL_SQL).toMatch(/alter table subtask_assignees replica identity full/i);
+    expect(ALL_SQL).toMatch(/alter table subtask_assignees\s+enable row level security/);
+    // And the cutover knows about it, or it stays world-writable after 0004.
+    expect(LATER_SQL.join('\n')).toMatch(/subtask_assignees/);
+    // The bridge keeps a stale tab's single-owner write visible meanwhile.
+    expect(ALL_SQL).toMatch(/create trigger subtasks_mirror_assignee/);
+  });
+
+  it('notifies step hand-overs from the join table, not the old column', () => {
+    const sql = LATER_SQL.join('\n');
+    expect(sql).toContain('create trigger subtask_assignees_notify');
+    // Superseded: leaving both attached would notify twice for one hand-over.
+    expect(sql).toMatch(/drop trigger if exists subtasks_notify_assignment/);
+    expect(sql).toMatch(/drop function if exists notify_subtask_assignment/);
+  });
+
+  it('publishes every table the client subscribes to', () => {
+    // Realtime only broadcasts tables in the publication. A table that is
+    // written but not published saves fine and never reaches anybody.
+    for (const table of [
+      'tasks',
+      'subtasks',
+      'projects',
+      'members',
+      'activity',
+      'task_assignees',
+      'subtask_assignees',
+      'notifications',
+    ]) {
+      expect(ALL_SQL, `${table} is never added to supabase_realtime`).toContain(table);
+    }
+    // Deletes carry the old row only with a full replica identity; a composite
+    // key needs both columns to know which membership went.
+    expect(ALL_SQL).toMatch(/alter table task_assignees replica identity full/i);
+  });
+
+  it('enables row level security on the assignment table', () => {
+    expect(ALL_SQL).toMatch(/alter table task_assignees\s+enable row level security/);
+    // And the cutover knows about it, so 0004 does not leave it world-writable.
+    expect(LATER_SQL.join('\n')).toMatch(/task_assignees/);
+  });
+
+  it('gives a subtask step an owner, stamped by the database', () => {
+    const columns = columnsOf('subtasks');
+    expect(columns.has('assignee_id'), 'subtasks.assignee_id missing').toBe(true);
+    // When it was handed over, filled by the trigger rather than the client —
+    // the client does not track it and must not be able to forge it.
+    expect(columns.has('assigned_at'), 'subtasks.assigned_at missing').toBe(true);
+    expect(ALL_SQL).toMatch(/create trigger subtasks_assignee_stamp/);
+    // A removed member leaves their steps unassigned rather than pointing at
+    // a row that no longer exists.
+    expect(LATER_SQL.join('\n')).toMatch(/references members\(id\) on delete set null/i);
+  });
+
+  it('declares the notification table and the triggers that fill it', () => {
+    expect(ALL_SQL).toContain('create table if not exists notifications');
+    const columns = columnsOf('notifications');
+    for (const column of [
+      'workspace_id',
+      'recipient_id',
+      'actor_id',
+      'actor_name',
+      'kind',
+      'task_id',
+      'task_key',
+      'summary',
+      'created_at',
+      'read_at',
+      'mutation_id',
+    ]) {
+      expect(columns.has(column), `notifications.${column} missing`).toBe(true);
+    }
+
+    // Written by triggers, not by the client: one per assignment, per step
+    // hand-over, and per status change worth interrupting for.
+    for (const trigger of [
+      'task_assignees_notify',
+      'subtasks_notify_assignment',
+      'tasks_notify_status',
+    ]) {
+      expect(ALL_SQL, `${trigger} missing`).toContain(`create trigger ${trigger}`);
+    }
+    expect(ALL_SQL).toMatch(/alter table notifications\s+enable row level security/);
+  });
+
+  it('never notifies the person who made the change', () => {
+    // A bell that rings for your own click is a bell people turn off.
+    const sql = LATER_SQL.join('\n');
+    expect(sql).toMatch(/v_actor = new\.member_id/);
+    expect(sql).toMatch(/v_actor = new\.assignee_id/);
+    expect(sql).toMatch(/a\.member_id <> v_actor/);
+  });
+
+  it('scopes the bell per person, and lets nobody write one by hand', () => {
+    const tighten = LATER_SQL.join('\n');
+    expect(tighten).toMatch(/recipient_id = my_member_id\(\)/);
+    // No insert policy on purpose: the triggers are SECURITY DEFINER, so a
+    // client cannot manufacture a notification even for itself.
+    expect(tighten).not.toMatch(/create policy notifications_insert/);
+  });
+
+  it('keeps the legacy assignee column so a stale tab still works', () => {
+    // Expand, do not contract: the deployed client still writes assignee_id.
+    // Dropping it in 0005 would break every open tab the moment it is applied.
+    expect(SQL).toMatch(/assignee_id\s+uuid\s+references members\(id\)/);
+    expect(LATER_SQL.join('\n')).not.toMatch(/drop column assignee_id/i);
+    // And a bridge keeps the old column and the join table in step meanwhile.
+    expect(LATER_SQL.join('\n')).toMatch(/create trigger tasks_mirror_assignee/);
+  });
+
+  it('declares the identity columns sign-in binds against', () => {
+    // `user_id` has been reserved since 0001; `email` is what an invite is
+    // addressed to, and the claim in `linkAccount` matches on it.
+    const members = columnsOf('members');
+    expect(members.has('user_id'), 'members.user_id missing').toBe(true);
+    expect(members.has('email'), 'members.email missing').toBe(true);
+    // One account, one member row — the claim would be ambiguous otherwise.
+    const identity = LATER_SQL.join('\n');
+    expect(identity).toMatch(/unique index if not exists members_user_id_key/i);
+    expect(identity).toMatch(/unique index if not exists members_workspace_email_key/i);
   });
 
   it('exposes the audit columns the activity feed reads', () => {
@@ -121,5 +279,31 @@ describe('mapper rows only use declared columns', () => {
     for (const column of ['actor_id', 'actor_name', 'action', 'task_key', 'summary', 'created_at']) {
       expect(declared.has(column), `activity.${column} missing`).toBe(true);
     }
+  });
+});
+
+describe('the row-level-security cutover', () => {
+  const tighten = LATER_SQL.find((sql) => /tighten Row Level Security/i.test(sql)) ?? '';
+
+  it('ships a migration that stops trusting the anon key', () => {
+    expect(tighten, 'no RLS-tightening migration found').not.toBe('');
+    // The permissive policies from 0001 are dropped, not merely shadowed.
+    expect(tighten).toMatch(/drop policy if exists %I on %I/);
+    expect(tighten).toMatch(/revoke all on %I from anon/);
+  });
+
+  it('resolves membership through SECURITY DEFINER helpers', () => {
+    // A policy on `members` that queried `members` would recurse; the helper is
+    // what makes the policy expressible at all.
+    for (const fn of ['is_workspace_member', 'is_project_member', 'is_task_member']) {
+      expect(tighten).toContain(`create or replace function ${fn}`);
+    }
+    expect((tighten.match(/security definer/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  });
+
+  it('leaves a way to claim an invite without already being a member', () => {
+    // Without this clause the first sign-in can never bind: the account is not
+    // a member yet, so a pure membership check would reject its own claim.
+    expect(tighten).toMatch(/user_id is null and email is not null and lower\(email\) = current_email\(\)/);
   });
 });

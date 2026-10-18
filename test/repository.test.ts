@@ -160,7 +160,7 @@ describe('applyChange', () => {
 
   it('preserves locally held subtasks and the expanded flag', () => {
     const target = ws.tasks[0]!;
-    target.subs = [{ id: 's-local', t: 'Typed just now', done: false }];
+    target.subs = [{ id: 's-local', t: 'Typed just now', done: false, assigneeIds: [] }];
     target.open = true;
     const change: RowChange = {
       table: 'tasks',
@@ -170,7 +170,7 @@ describe('applyChange', () => {
     applyChange(ws, change, ctx);
     const after = ws.tasks.find((t) => t.id === target.id)!;
     expect(after.title).toBe('Renamed elsewhere');
-    expect(after.subs).toEqual([{ id: 's-local', t: 'Typed just now', done: false }]);
+    expect(after.subs).toEqual([{ id: 's-local', t: 'Typed just now', done: false, assigneeIds: [] }]);
     expect(after.open).toBe(true);
   });
 
@@ -187,6 +187,105 @@ describe('applyChange', () => {
     const result = applyChange(ws, change, ctx);
     expect(result.needsResync).toBe(false);
     expect(result.changed).toBe(true);
+  });
+
+  it('preserves the assignees when a task row arrives', () => {
+    // Assignees live in the join table, so a `tasks` row carries an empty
+    // list. Overwriting from it would silently empty every card the moment a
+    // title was renamed on another machine.
+    const target = ws.tasks.find((t) => t.assigneeIds.length)!;
+    const before = [...target.assigneeIds];
+    const change: RowChange = {
+      table: 'tasks',
+      type: 'UPDATE',
+      row: { ...taskToRow(target, target.position ?? 0), title: 'Renamed elsewhere' },
+    };
+    applyChange(ws, change, ctx);
+    expect(ws.tasks.find((t) => t.id === target.id)!.assigneeIds).toEqual(before);
+  });
+
+  it('adds and removes one person from a task_assignees event', () => {
+    const target = ws.tasks.find((t) => t.assigneeIds.length)!;
+    const other = ws.members.find((m) => !target.assigneeIds.includes(m.id))!;
+
+    const added = applyChange(
+      ws,
+      { table: 'task_assignees', type: 'INSERT', row: { task_id: target.id, member_id: other.id } },
+      ctx,
+    );
+    expect(added.changed).toBe(true);
+    expect(ws.tasks.find((t) => t.id === target.id)!.assigneeIds).toContain(other.id);
+
+    const removed = applyChange(
+      ws,
+      {
+        table: 'task_assignees',
+        type: 'DELETE',
+        row: { task_id: target.id, member_id: other.id },
+        old: { task_id: target.id, member_id: other.id },
+      },
+      ctx,
+    );
+    expect(removed.changed).toBe(true);
+    expect(ws.tasks.find((t) => t.id === target.id)!.assigneeIds).not.toContain(other.id);
+  });
+
+  it('credits the taker when the first person joins over realtime', () => {
+    const target = ws.tasks.find((t) => !t.assigneeIds.length && t.status === 'TODO')!;
+    target.claimedBy = null;
+    target.claimedAt = null;
+    const someone = ws.members[2]!;
+
+    applyChange(
+      ws,
+      { table: 'task_assignees', type: 'INSERT', row: { task_id: target.id, member_id: someone.id } },
+      ctx,
+    );
+
+    const after = ws.tasks.find((t) => t.id === target.id)!;
+    expect(after.assigneeIds).toEqual([someone.id]);
+    expect(after.claimedBy).toBe(someone.id);
+    expect(after.claimedAt).toBeTypeOf('number');
+  });
+
+  it('ignores a duplicate membership event, or one for an unknown task', () => {
+    const target = ws.tasks.find((t) => t.assigneeIds.length)!;
+    const existing = target.assigneeIds[0]!;
+    // Re-delivering a row we already hold must not add the person twice.
+    expect(
+      applyChange(
+        ws,
+        { table: 'task_assignees', type: 'INSERT', row: { task_id: target.id, member_id: existing } },
+        ctx,
+      ).changed,
+    ).toBe(false);
+    expect(
+      applyChange(
+        ws,
+        { table: 'task_assignees', type: 'INSERT', row: { task_id: 'not-a-task', member_id: existing } },
+        ctx,
+      ).changed,
+    ).toBe(false);
+  });
+
+  it('moves the "took it" credit off a member who leaves the task', () => {
+    const target = ws.tasks.find((t) => t.assigneeIds.length === 1)!;
+    const leaver = target.assigneeIds[0]!;
+    expect(target.claimedBy).toBe(leaver);
+    applyChange(
+      ws,
+      {
+        table: 'task_assignees',
+        type: 'DELETE',
+        row: { task_id: target.id, member_id: leaver },
+        old: { task_id: target.id, member_id: leaver },
+      },
+      ctx,
+    );
+    const after = ws.tasks.find((t) => t.id === target.id)!;
+    expect(after.assigneeIds).toEqual([]);
+    expect(after.claimedBy).toBeNull();
+    expect(after.claimedAt).toBeNull();
   });
 
   it('asks for a resync when the position actually changes', () => {
@@ -225,16 +324,16 @@ describe('applyChange', () => {
       ctx,
     );
     expect(result.changed).toBe(true);
-    expect(task.subs.at(-1)).toEqual({ id: 's-new', t: 'From Nithin', done: false });
+    expect(task.subs.at(-1)).toEqual({ id: 's-new', t: 'From Nithin', done: false, assigneeIds: [] });
   });
 
   it('drops a removed member and frees their tasks', () => {
     const victim = ws.members.find((m) => m.id === 'm3')!;
-    const owned = ws.tasks.filter((t) => t.assigneeId === victim.id).map((t) => t.id);
+    const owned = ws.tasks.filter((t) => t.assigneeIds.includes(victim.id)).map((t) => t.id);
     expect(owned.length).toBeGreaterThan(0);
     applyChange(ws, { table: 'members', type: 'DELETE', row: { id: victim.id } }, ctx);
     expect(ws.members.find((m) => m.id === victim.id)).toBeUndefined();
-    owned.forEach((id) => expect(ws.tasks.find((t) => t.id === id)?.assigneeId).toBeNull());
+    owned.forEach((id) => expect(ws.tasks.find((t) => t.id === id)!.assigneeIds).toEqual([]));
   });
 
   it('moves the active project when the open one is deleted', () => {
@@ -260,7 +359,7 @@ describe('domain persistence hook', () => {
   it('reserves keys through the injected resolver', async () => {
     const nextKey = vi.fn(async () => 'NE-999');
     const d = new FlowDomain(seed(NOW), { storage: memoryStorage(), nextKey });
-    const t = await d.createTask({ title: 'Server-keyed', typeId: 'tt3', assigneeId: null, due: null, priority: 'normal' });
+    const t = await d.createTask({ title: 'Server-keyed', typeId: 'tt3', assigneeIds: [], due: null, priority: 'normal' });
     expect(nextKey).toHaveBeenCalled();
     expect(t?.key).toBe('NE-999');
   });
@@ -372,6 +471,7 @@ describe('SyncController — demo is local-only', () => {
     const sync = new SyncController(host, {
       onWorkspaceChanged,
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: vi.fn(),
       onPresence: vi.fn(),
     });
@@ -433,9 +533,11 @@ describe('SyncController — demo is local-only', () => {
     live.mode = 'live' as const;
     const host = new RepositoryHost(repo as never);
     const onActivityChanged = vi.fn();
+    const onNotificationsChanged = vi.fn();
     const sync = new SyncController(host, {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged,
+      onNotificationsChanged,
       onStatus: (next) => {
         status = next as never;
       },
@@ -444,6 +546,16 @@ describe('SyncController — demo is local-only', () => {
     sync.setWorkspaceRef(() => live);
     sync.start(null);
     handlers.change?.({ table: 'activity', type: 'INSERT', row: { id: 1, action: 'task.status' } });
+    expect(onActivityChanged).toHaveBeenCalledTimes(1);
+    // A notification is not workspace state either: it is refetched, and the
+    // two feeds must not be confused for one another.
+    expect(onNotificationsChanged).not.toHaveBeenCalled();
+    handlers.change?.({
+      table: 'notifications',
+      type: 'INSERT',
+      row: { id: 2, kind: 'task.assigned', recipient_id: 'm1' },
+    });
+    expect(onNotificationsChanged).toHaveBeenCalledTimes(1);
     expect(onActivityChanged).toHaveBeenCalledTimes(1);
   });
 
@@ -512,6 +624,7 @@ describe('SyncController — resilience', () => {
     const sync = new SyncController(host, {
       onWorkspaceChanged,
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (st) => {
         statuses.push({ state: st.state, pending: st.pending, retryInSeconds: st.retryInSeconds });
       },
@@ -652,6 +765,7 @@ describe('SyncController — setup required', () => {
     const sync = new SyncController(new RepositoryHost(repo as never), {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (s) => statuses.push({ setupRequired: s.setupRequired, state: s.state, error: s.error }),
       onPresence: vi.fn(),
     });
@@ -718,6 +832,7 @@ describe('SyncController — connection timeout', () => {
     const sync = new SyncController(new RepositoryHost(repo as never), {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (st) => statuses.push({ state: st.state, error: st.error }),
       onPresence: vi.fn(),
     });
@@ -857,6 +972,7 @@ describe('setup notice survives later status updates', () => {
     const sync = new SyncController(new RepositoryHost(repo as never), {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (s) => statuses.push({ setupRequired: s.setupRequired, state: s.state, error: s.error }),
       onPresence: vi.fn(),
     });
@@ -914,6 +1030,7 @@ describe('SyncController — pending count is honest', () => {
     const sync = new SyncController(new RepositoryHost(repo as never), {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (st) => statuses.push(st.pending),
       onPresence: vi.fn(),
     });
@@ -929,7 +1046,10 @@ describe('SyncController — pending count is honest', () => {
     expect(statuses.at(-1)).toBe(2);
 
     // Let the in-flight write finish: it covered only the first edit.
-    releaseWrite?.();
+    // Read through a local: TypeScript narrows `releaseWrite` to its initial
+    // `null`, because the only assignment happens inside the executor above.
+    const release = releaseWrite as (() => void) | null;
+    release?.();
     await new Promise((r) => setTimeout(r, 20));
 
     // One edit is still outstanding, so the count must not be zero.
@@ -951,6 +1071,7 @@ describe('SyncController — pending count is honest', () => {
     const sync = new SyncController(new RepositoryHost(repo as never), {
       onWorkspaceChanged: vi.fn(),
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (st) => statuses.push(st.pending),
       onPresence: vi.fn(),
     });
@@ -1001,6 +1122,7 @@ describe('resync never discards unsaved work', () => {
         if (replacement) adopted.push(...replacement.tasks.slice(0, 1));
       },
       onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
       onStatus: (next) => {
         status = next as never;
       },
@@ -1046,7 +1168,8 @@ describe('resync never discards unsaved work', () => {
 
   it('a recovered write clears the failure state, not just the message', async () => {
     const h = scene({ flushWorks: false });
-    await h.sync.start();
+    // `me` is presence only; an unauthenticated test client passes null.
+    await h.sync.start(null);
     h.sync.schedule(h.local, { urgent: true });
     await vi.waitFor(() => expect(h.status().state).toBe('error'));
 
@@ -1056,5 +1179,97 @@ describe('resync never discards unsaved work', () => {
     await h.sync.flushNow(h.local);
     await vi.waitFor(() => expect(h.status().error).toBe(null));
     expect(h.status().state).not.toBe('error');
+  });
+});
+
+/**
+ * The heartbeat.
+ *
+ * `resync` runs on a 60-second timer, on window focus and on every reconnect.
+ * Adopting a snapshot it already had meant re-rendering the whole board on that
+ * schedule, which destroyed whatever was half-typed — a bug with no error and
+ * no way to get the text back.
+ */
+describe('a resync with nothing new to say', () => {
+  function heartbeatScene() {
+    let current = seed(NOW);
+    current.mode = 'live' as const;
+    current.workspaceId = 'ws-1';
+    current.tasks.forEach((t, i) => {
+      t.position = i;
+    });
+
+    // A distinct copy. Sharing one object would make "the server changed" and
+    // "nothing changed" indistinguishable to the test itself.
+    const server = JSON.parse(JSON.stringify(current)) as ReturnType<typeof seed>;
+
+    const adopted: string[] = [];
+    const repo = {
+      kind: 'supabase' as const,
+      load: vi.fn(async () => JSON.parse(JSON.stringify(server))),
+      flush: vi.fn(async () => {}),
+      bootstrap: vi.fn(async (ws: unknown) => ws),
+      nextTaskKey: vi.fn(async () => 'NE-1'),
+      subscribe: vi.fn(() => () => {}),
+      logActivity: vi.fn(async () => {}),
+      recentActivity: vi.fn(async () => []),
+    };
+    const sync = new SyncController(new RepositoryHost(repo as never), {
+      onWorkspaceChanged: (replacement) => {
+        if (!replacement) return;
+        adopted.push(replacement.tasks[0]!.title);
+        // Mirror the app: adopting replaces what the controller holds.
+        current = replacement;
+      },
+      onActivityChanged: vi.fn(),
+      onNotificationsChanged: vi.fn(),
+      onStatus: vi.fn(),
+      onPresence: vi.fn(),
+    });
+    sync.setWorkspaceRef(() => current);
+    return { sync, adopted, server: () => server };
+  }
+
+  it('re-renders nothing when the snapshot is identical', async () => {
+    const h = heartbeatScene();
+    await h.sync.resync();
+    expect(h.adopted).toEqual([]);
+    // And again, because the heartbeat does not stop.
+    await h.sync.resync();
+    await h.sync.resync();
+    expect(h.adopted).toEqual([]);
+  });
+
+  it('still adopts a snapshot that really changed', async () => {
+    const h = heartbeatScene();
+    await h.sync.resync();
+    expect(h.adopted).toEqual([]);
+
+    h.server().tasks[0]!.title = 'Renamed by somebody else';
+    await h.sync.resync();
+    expect(h.adopted).toEqual(['Renamed by somebody else']);
+
+    // …and then goes quiet again rather than re-rendering on every tick.
+    await h.sync.resync();
+    expect(h.adopted).toHaveLength(1);
+  });
+
+  it('notices a teammate joining an existing task', async () => {
+    // A set membership change is easy to miss with a shallow comparison, and
+    // exactly the kind of change a second person makes.
+    const h = heartbeatScene();
+    await h.sync.resync();
+    h.server().tasks[0]!.assigneeIds = [...h.server().tasks[0]!.assigneeIds, 'm5'];
+    await h.sync.resync();
+    expect(h.adopted).toHaveLength(1);
+  });
+
+  it('notices a change to a step inside a task', async () => {
+    const h = heartbeatScene();
+    await h.sync.resync();
+    const task = h.server().tasks.find((t) => t.subs.length)!;
+    task.subs[0]!.t = 'Renamed step';
+    await h.sync.resync();
+    expect(h.adopted).toHaveLength(1);
   });
 });
