@@ -25,6 +25,7 @@ const SHELL = `
     <div class="ctrls" id="ctrls"></div>
     <div class="hp" id="hp"></div>
     <div class="menu" id="wsmenu"></div>
+    <div class="acct" id="acct"></div>
   </div></header>
   <div class="sub" id="sub"></div>
   <div class="wrap">
@@ -305,7 +306,7 @@ describe('binding an account to a member', () => {
     expect(win.document.body.classList.contains('booting')).toBe(false);
     // The header names the signed-in person, and the impersonation picker is
     // gone: there is nothing left to act as.
-    expect($('#ctrls').textContent).toContain('Arjun Menon');
+    expect($('#acct').textContent).toContain('Arjun Menon');
     expect($('#ctrls').querySelector('[data-act="me"]')).toBeNull();
   });
 
@@ -415,7 +416,7 @@ describe('a session that changes elsewhere', () => {
     const { host } = sharedHost([memberRow({ user_id: 'auth-1' })]);
     const app = new BlackitFlowApp({ workspace: emptyWorkspace(), host, auth, requireLogin: true });
     await app.start();
-    expect($('#ctrls').textContent).toContain('Arjun Menon');
+    expect($('#acct').textContent).toContain('Arjun Menon');
 
     // The provider reports the sign-out this tab did not perform.
     auth.emit(null);
@@ -425,7 +426,7 @@ describe('a session that changes elsewhere', () => {
     expect(win.document.body.classList.contains('booting')).toBe(true);
     // Not just covered up: the previous account's workspace is gone from the
     // DOM as well as from the screen.
-    expect($('#ctrls').textContent).not.toContain('Arjun Menon');
+    expect($('#acct').textContent).not.toContain('Arjun Menon');
     expect($('#chain').textContent).not.toContain('Arjun Menon');
     expect(app.domain.workspace.members).toHaveLength(0);
   });

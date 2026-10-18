@@ -20,6 +20,7 @@ import {
   renderChain,
   renderChat,
   renderControls,
+  renderAccount,
   renderMenuButton,
   renderActivityFeed,
   renderSetupBanner,
@@ -560,6 +561,8 @@ export class BlackitFlowApp {
   private renderBar(): void {
     const el = document.querySelector(HOOKS.ctrls);
     if (el) swapHtml(el, renderControls(this.domain, this.account));
+    const account = document.querySelector(HOOKS.account);
+    if (account) account.innerHTML = renderAccount(this.account);
     const menu = document.querySelector(HOOKS.menu);
     // The popover moves with its button, so the slot is rebuilt wholesale — but
     // only when the identity behind it changed (or it is missing). Rebuilding
@@ -584,7 +587,23 @@ export class BlackitFlowApp {
   private renderChain(): void {
     const el = document.querySelector(HOOKS.chain);
     if (!el) return;
+    // Every render rebuilds the chain, which replayed the open subtask lists'
+    // fade-in on each click — the whole board blinked — and threw each list
+    // back to its top. Lists that were already open stay still and keep their
+    // scroll; only a list that has just opened animates.
+    const before = new Map<string, number>();
+    el.querySelectorAll<HTMLElement>('.row[data-task] .subs.on').forEach((subs) => {
+      const id = subs.closest<HTMLElement>('.row[data-task]')?.dataset.task;
+      if (id) before.set(id, subs.querySelector<HTMLElement>('.slist')?.scrollTop ?? 0);
+    });
     swapHtml(el, renderChain(this.domain));
+    el.querySelectorAll<HTMLElement>('.row[data-task] .subs.on').forEach((subs) => {
+      const id = subs.closest<HTMLElement>('.row[data-task]')?.dataset.task;
+      if (!id || !before.has(id)) return;
+      subs.classList.add('seen');
+      const list = subs.querySelector<HTMLElement>('.slist');
+      if (list) list.scrollTop = before.get(id)!;
+    });
     if (this.domain.workspace.enter) {
       this.domain.workspace.enter = null;
       this.domain.save();
@@ -601,7 +620,12 @@ export class BlackitFlowApp {
     if (fab) fab.innerHTML = fabIcon(this.chat.open);
     if (!chat) return;
     chat.classList.toggle('on', this.chat.open);
+    // Messages already on screen do not slide in again on every refresh.
+    const shown = chat.querySelectorAll('.msg').length;
     swapHtml(chat, renderChat(this.domain, this.chat));
+    chat.querySelectorAll('.msg').forEach((m, i) => {
+      if (i < shown) m.classList.add('seen');
+    });
     const msgs = chat.querySelector<HTMLElement>('#msgs');
     if (msgs) msgs.scrollTop = msgs.scrollHeight;
   }
@@ -882,6 +906,8 @@ export class BlackitFlowApp {
     }
     if (el?.dataset?.subinput && e.key === 'Enter') {
       e.preventDefault();
+      // A held Enter auto-repeats; one press adds one subtask.
+      if (e.repeat) return;
       const btn = document.querySelector<HTMLElement>(`[data-act="sub-add"][data-id="${el.dataset.subinput}"]`);
       btn?.click();
       return;

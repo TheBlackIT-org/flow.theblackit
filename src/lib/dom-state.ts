@@ -88,11 +88,21 @@ export function restoreFields(root: Element, snapshots: FieldSnapshot[]): void {
     const isBox = boxed.type === 'checkbox' || boxed.type === 'radio';
     if (isBox) {
       if (snapshot.checked !== undefined) boxed.checked = snapshot.checked;
+    } else if (el.hasAttribute('data-act')) {
+      // A `data-act` field (the Project, Acting as and Member pickers, a role)
+      // commits the moment it changes, so it never holds unsaved input and the
+      // render is the truth. Restoring it put the old value back: after the demo
+      // loaded, "No project yet" — which matches no option — left the header
+      // pickers showing no text at all.
     } else if (el.value !== snapshot.value) {
       // Only touch it when it actually differs, so a rendered default (an
       // `<option selected>`, a `value="…"` attribute) is not clobbered by an
-      // empty snapshot entry.
-      el.value = snapshot.value;
+      // empty snapshot entry. A select is never given a value none of its
+      // options carry: that leaves it blank.
+      const isSelect = el.tagName === 'SELECT';
+      if (!isSelect || Array.from((el as HTMLSelectElement).options).some((o) => o.value === snapshot.value)) {
+        el.value = snapshot.value;
+      }
     }
     if (snapshot.start !== null) {
       try {

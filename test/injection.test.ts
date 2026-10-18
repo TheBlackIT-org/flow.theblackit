@@ -8,6 +8,7 @@ import { FlowDomain, seed } from '../src/lib/domain';
 import {
   accountAvatar,
   projectMenu,
+  renderAccount,
   renderAuthScreen,
   renderBell,
   renderChain,
@@ -140,7 +141,7 @@ describe('hostile account data stays inert', () => {
 
   it('escapes the signed-in header chip and the ⋯ menu', () => {
     // The account name and email reach both, straight from the provider.
-    expectInert(renderControls(poisoned(), HOSTILE), 'account chip');
+    expectInert(renderAccount(HOSTILE), 'account chip');
     expectInert(projectMenu(HOSTILE), 'account menu');
     expectInert(accountAvatar(HOSTILE), 'account avatar');
   });

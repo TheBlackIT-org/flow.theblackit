@@ -54,6 +54,7 @@ export const HOOKS = {
   toast: '#toast',
   headProgress: '#hp',
   live: '#live',
+  account: '#acct',
   activity: '#activity',
   setupBanner: '#setup-banner',
 } as const;
@@ -176,10 +177,10 @@ export function renderControls(domain: FlowDomain, account?: AuthUser | null): s
           .join('') +
         '</select></div>'
       : '<div class="fld"><span>Project</span><select disabled><option>No project yet</option></select></div>') +
+    // Signed in, the account is shown after the live chip instead; see
+    // renderAccount.
     (account
-      ? '<div class="fld"><span>Signed in</span><div class="mchip">' +
-        accountAvatar(account) +
-        `<b>${esc(account.name)}</b></div></div>`
+      ? ''
       : '<div class="fld"><span>Acting as</span><select data-act="me">' +
         (db.members.length
           ? db.members
@@ -190,6 +191,15 @@ export function renderControls(domain: FlowDomain, account?: AuthUser | null): s
     '<button class="btn sm" data-act="new-project">+ Project</button>' +
     `<button class="btn sm" data-act="team">Team${db.members.length ? ` (${db.members.length})` : ''}</button>`
   );
+}
+
+/** The signed-in indicator, which sits in the header after the live chip. */
+export function renderAccount(account?: AuthUser | null): string {
+  return account
+    ? '<div class="fld"><span>Signed in</span><div class="mchip">' +
+        accountAvatar(account) +
+        `<b>${esc(account.name)}</b></div></div>`
+    : '';
 }
 
 /** Progress bar + legend + member/status filters. */
@@ -351,7 +361,8 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
     '</button>' +
     `<div class="subs${t.open ? ' on' : ''}">` +
     (t.subs.length
-      ? t.subs
+      ? '<div class="slist">' +
+        t.subs
           .map((s, ix) => {
             const owners = s.assigneeIds
               .map((id) => domain.member(id))
@@ -375,7 +386,8 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
               `<button class="sdel" data-act="sub-del" data-id="${esc(t.id)}" data-idx="${esc(ix)}" title="Delete this subtask">✕</button></div>`
             );
           })
-          .join('')
+          .join('') +
+        '</div>'
       : '<div class="subempty">No subtasks yet. Anyone can add one.</div>') +
     `<div class="subadd"><input type="text" data-subinput="${esc(t.id)}" placeholder="Add a subtask and press Enter" />` +
     `<button data-act="sub-add" data-id="${esc(t.id)}">Add</button></div>` +
