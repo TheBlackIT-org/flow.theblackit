@@ -230,10 +230,18 @@ export class FlowActions {
           this.ctx.toast('Type the subtask first');
           break;
         }
-        domain.addSub(id, text);
+        if (!domain.addSub(id, text)) break;
+        // Empty the box only once the subtask exists. The re-render carries
+        // typed text across (dom-state.ts), so leaving it filled put the old
+        // text straight back — and a second click added it again.
+        const input = document.querySelector<HTMLInputElement>(`[data-subinput="${id}"]`);
+        if (input) input.value = '';
         this.focusSub = `[data-subinput="${id}"]`;
         // refresh() re-renders and then restores focus to the same input.
         this.refresh();
+        // Keep the new subtask in view at the bottom of a scrolling list.
+        const list = document.querySelector<HTMLElement>(`.row[data-task="${id}"] .slist`);
+        if (list) list.scrollTop = list.scrollHeight;
         if (t) this.ctx.toast(`Subtask added to ${t.key}`);
         break;
       }

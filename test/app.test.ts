@@ -320,6 +320,41 @@ describe('subtasks', () => {
     expect(app.domain.findTask('t1')?.subs.at(-1)?.t).toBe('Typed then entered');
   });
 
+  it('empties the subtask box once the step is added, so a second click adds nothing', async () => {
+    await click($('.row[data-task="t1"] .subtoggle'));
+    const count = app.domain.findTask('t1')!.subs.length;
+    ($('[data-subinput="t1"]') as HTMLInputElement).value = 'Only once';
+    await click($('[data-act="sub-add"][data-id="t1"]'));
+    expect(($('[data-subinput="t1"]') as HTMLInputElement).value).toBe('');
+    await click($('[data-act="sub-add"][data-id="t1"]'));
+    expect(app.domain.findTask('t1')!.subs.length).toBe(count + 1);
+  });
+
+  it('keeps typed text when nothing was added', async () => {
+    await click($('.row[data-task="t1"] .subtoggle'));
+    const input = $('[data-subinput="t1"]') as HTMLInputElement;
+    input.value = '   ';
+    await click($('[data-act="sub-add"][data-id="t1"]'));
+    expect(($('[data-subinput="t1"]') as HTMLInputElement).value).toBe('   ');
+  });
+
+  it('adds one subtask for a held Enter key', async () => {
+    await click($('.row[data-task="t1"] .subtoggle'));
+    const count = app.domain.findTask('t1')!.subs.length;
+    const input = $('[data-subinput="t1"]') as HTMLInputElement;
+    input.value = 'Held down';
+    key(input, 'Enter');
+    $('[data-subinput="t1"]').dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', repeat: true, bubbles: true }));
+    expect(app.domain.findTask('t1')!.subs.length).toBe(count + 1);
+  });
+
+  it('animates a subtask list when it opens, not on every later render', async () => {
+    await click($('.row[data-task="t1"] .subtoggle'));
+    expect($('.row[data-task="t1"] .subs').classList.contains('seen')).toBe(false);
+    await click($$('.row[data-task="t1"] .sbox')[0]);
+    expect($('.row[data-task="t1"] .subs').classList.contains('seen')).toBe(true);
+  });
+
   it('puts two people on one step from the step picker', async () => {
     await click($('.row[data-task="t1"] .subtoggle'));
     const sub = app.domain.findTask('t1')!.subs[0]!;

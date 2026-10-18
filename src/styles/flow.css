@@ -8,7 +8,9 @@
   --bg: #0a0b10;
   --ink: #eef1f6;
   --muted: #8b95a6;
-  --muted-2: #697487;
+  /* Secondary text. #697487 measured ~4.1:1 on the page and ~3.8:1 on a card,
+     under the 4.5:1 small text needs; this is the same hue, lifted to pass. */
+  --muted-2: #77839a;
   --line: #232830;
   --teal: #2ee6c5;
   --green: #35d07f;
@@ -87,8 +89,11 @@ header.top {
 }
 /* The selects give up width first; the buttons never wrap to a second line. */
 .ctrls select { max-width: 200px; min-width: 96px; flex: 0 1 auto; }
-.ctrls .fld { min-width: 0; flex: 0 1 auto; }
-.ctrls .btn { flex: none; }
+/* A field never shrinks below its select's minimum: when it did, the select
+   spilled out of it and slid under the "+ Project" button. */
+.ctrls .fld { min-width: 96px; flex: 0 1 auto; }
+/* The buttons sit on the selects' line, not on their captions'. */
+.ctrls .btn { flex: none; align-self: flex-end; }
 
 .hp {
   display: flex; align-items: center; gap: 9px; flex: none; align-self: start;
@@ -107,8 +112,11 @@ header.top {
 .top-in.scrolled .hide-scroll { display: none; }
 
 /* ---------- reorder by drag ---------- */
+/* `padding: 0`: the browser's default button padding (1px 6px) left a 6px
+   content box, so the 13px icon was pushed right and out of its own hover
+   background. Same for the subtask tick in `.sbox`. */
 .grip {
-  width: 18px; height: 22px; margin-left: -3px; display: grid; place-items: center;
+  width: 18px; height: 22px; margin-left: -3px; padding: 0; display: grid; place-items: center;
   color: var(--muted-2); cursor: grab; touch-action: none; flex: none;
   border-radius: 6px; transition: color 0.15s ease, background 0.15s ease;
 }
@@ -128,7 +136,20 @@ header.top {
   font-size: 14.5px; font-weight: 600; letter-spacing: -0.01em; line-height: 1.35;
   margin: 0; padding-right: 30px;
 }
-.card.done { opacity: 0.72; }
+/* Dimmed to 72%, but not with `opacity` on the card itself: that made the card
+   its own stacking layer, so its ⋯ menu could not rise above the next card and
+   came out faded too. The contents are dimmed instead (all but the menu), and
+   the card's own border, fill and shadow carry the same 0.72 factor. */
+.card.done {
+  border-color: rgba(255, 255, 255, 0.065);
+  background: linear-gradient(180deg, rgba(23, 28, 38, 0.62), rgba(17, 21, 29, 0.62));
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.216);
+}
+.card.done > :not(.pop) { opacity: 0.72; }
+/* Each dimmed child is now a layer of its own, painted in source order, so the
+   full-width header row would sit on top of the ⋯ button and take its clicks.
+   Keep the button above the contents (and below its menu, z-index 20). */
+.card.done > .kebab { z-index: 1; }
 .card.done h3 { text-decoration: line-through; text-decoration-color: rgba(53, 208, 127, 0.6); }
 .card.prog { border-color: rgba(46, 230, 197, 0.34); box-shadow: 0 0 0 1px rgba(46, 230, 197, 0.1), 0 10px 30px rgba(0, 0, 0, 0.36); }
 .card.review { border-color: rgba(245, 181, 68, 0.3); }
@@ -205,6 +226,7 @@ body.grabbing-grip { cursor: grabbing; }
 .chh .s2 { font-size: 10.5px; color: var(--muted-2); margin-top: 1px; }
 .msgs { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .msg { max-width: 90%; font-size: 12.5px; line-height: 1.55; padding: 9px 12px; border-radius: 14px; animation: rowIn 0.22s ease-out both; word-wrap: break-word; }
+.msg.seen { animation: none; }
 .msg.bot { background: rgba(255, 255, 255, 0.055); border: 1px solid var(--stroke); border-bottom-left-radius: 5px; align-self: flex-start; }
 .msg.user { background: rgba(46, 230, 197, 0.14); border: 1px solid rgba(46, 230, 197, 0.34); border-bottom-right-radius: 5px; align-self: flex-end; }
 .msg b { color: var(--teal); font-weight: 600; }
@@ -350,7 +372,7 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
   background: rgba(46, 230, 197, 0.16); color: var(--teal);
 }
 .livecount.people { background: rgba(91, 155, 255, 0.16); color: var(--blue); }
-.pop.live { top: 38px; right: 0; left: auto; width: 254px; }
+.pop.live { top: calc(100% + 6px); right: 0; left: auto; width: 254px; }
 .pop.live .peer { display: flex; align-items: center; gap: 8px; padding: 6px 8px; font-size: 12.5px; color: #c8d0dc; }
 .pop.live .peer.muted { color: var(--muted-2); font-size: 11.5px; line-height: 1.5; }
 .pop.live .peer .you { font-size: 10px; color: var(--muted-2); text-transform: uppercase; letter-spacing: 0.06em; }
@@ -505,6 +527,10 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .sbar i { display: block; height: 100%; background: var(--teal); }
 .subs { margin-top: 11px; border-top: 1px solid var(--stroke); padding-top: 11px; display: none; }
 .subs.on { display: block; animation: fade 0.22s ease-out both; }
+/* Already open before this render: no replay (see renderChain in app.ts). */
+.subs.on.seen { animation: none; }
+/* A long list scrolls inside the card instead of stretching it. */
+.slist { max-height: 228px; overflow-y: auto; overscroll-behavior: contain; }
 @keyframes fade { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
 .acts { display: flex; gap: 8px; align-items: center; margin-top: 13px; flex-wrap: wrap; }
 .take { border: 1px solid rgba(46, 230, 197, 0.45); color: var(--teal); background: rgba(46, 230, 197, 0.09); border-radius: 10px; padding: 7px 12px; font-size: 12.5px; font-weight: 600; }
@@ -522,7 +548,9 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .mi:hover { background: rgba(255, 255, 255, 0.07); }
 .mi.danger { color: var(--red); }
 .sep { height: 1px; background: var(--stroke); margin: 5px 4px; }
-.pop.ws { top: 40px; right: 0; left: auto; width: 244px; }
+/* Opens just under its ⋯ button. The old `top: 40px` was measured from the
+   slot's top, above a 20px spacer, so the menu covered its own button. */
+.pop.ws { top: calc(100% + 6px); right: 0; left: auto; width: 244px; }
 .livewrap { position: relative; display: flex; align-items: center; gap: 8px; }
 
 /* ---------- notifications ---------- */
@@ -556,6 +584,11 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .scrim.on { opacity: 1; pointer-events: auto; }
 .modal { position: fixed; z-index: 92; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 460px; max-width: 92vw; max-height: 86vh; overflow: auto; background: #131720; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 18px; box-shadow: 0 30px 70px rgba(0, 0, 0, 0.6); display: none; }
 .modal.on { display: block; animation: popIn 0.22s ease-out both; }
+/* Title and buttons stay put; only the body scrolls. The whole box used to
+   scroll, carrying the Save button out of reach on a long form. */
+.modal.on { display: flex; flex-direction: column; overflow: hidden; }
+.modal .mh, .modal .mf { flex: none; }
+.modal .mb { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 @keyframes popIn { from { opacity: 0; transform: translate(-50%, -52%) scale(0.985); } to { opacity: 1; transform: translate(-50%, -50%); } }
 .modal .mh { padding: 16px 18px; border-bottom: 1px solid var(--stroke); font-weight: 600; font-size: 14px; }
 .modal .mb { padding: 18px; }
@@ -567,7 +600,7 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .toast div { background: #151b25; border: 1px solid rgba(46, 230, 197, 0.3); color: var(--ink); padding: 10px 15px; border-radius: 11px; font-size: 12.5px; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5); animation: rowIn 0.22s ease-out both; }
 
 /* Subtask checkbox and the composer's title field. */
-.sbox { width: 16px; height: 16px; border-radius: 5px; border: 1.5px solid rgba(255, 255, 255, 0.22); flex: none; display: grid; place-items: center; background: none; }
+.sbox { width: 16px; height: 16px; padding: 0; border-radius: 5px; border: 1.5px solid rgba(255, 255, 255, 0.22); flex: none; display: grid; place-items: center; background: none; }
 .sbox.on { background: var(--green); border-color: var(--green); color: #06291a; }
 .sbox svg { width: 10px; height: 10px; }
 /* ---------- composer ---------- */
@@ -616,6 +649,13 @@ select, input[type=text], input[type=date], input[type=email], input[type=passwo
 }
 select:focus, input:focus, textarea:focus { border-color: rgba(46, 230, 197, 0.45); }
 select { cursor: pointer; }
+/* Dropdowns: a dark colour scheme for the native list and arrow, and solid
+   option colours — the light text otherwise landed on the browser's light
+   popup. The closed control's fill and border were barely distinguishable
+   from the page. */
+select { color-scheme: dark; background-color: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.16); }
+select:focus { border-color: rgba(46, 230, 197, 0.45); }
+select option, select optgroup { background-color: #141821; color: var(--ink); }
 .btn {
   border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.05); border-radius: 10px;
   padding: 7px 12px; font-size: 12.5px; font-weight: 500; color: var(--ink); white-space: nowrap;
@@ -630,3 +670,40 @@ select { cursor: pointer; }
 /* Free-text type entry, revealed by choosing "Other…". */
 .typefree { margin-top: 5px; }
 .fld .typefree, .f .typefree { width: 100%; }
+
+/* ---------- header: signed-in indicator and menu placement ---------- */
+/* "Signed in" follows the live chip. Its caption sits on the selects'
+   caption line and the chip is centred on the selects' 34px line. */
+.top-in > .acct { flex: none; }
+.top-in > .acct:empty { display: none; }
+.acct .fld { display: grid; grid-template-rows: auto 34px; align-items: center; }
+.acct .mchip { justify-self: start; }
+
+/* Header menus open just under their trigger, flush with its right edge, and
+   a long one scrolls inside itself instead of running off the screen. */
+.top .pop.notifs { top: calc(100% + 6px); right: 0; }
+.top .pop { max-height: calc(100vh - 110px); overflow-y: auto; }
+
+/* Below the header's full width there is no room for the compact progress
+   bar and both pickers side by side: the bar narrows and its label goes, as
+   it already does on phones. */
+@media (max-width: 940px) {
+  .top-in.scrolled .hp .hpbar { width: 62px; }
+  .top-in.scrolled .hp .hplbl { display: none; }
+  .ctrls select, .ctrls .fld { min-width: 80px; }
+}
+@media (max-width: 860px) {
+  .top-in.scrolled .hp .hpbar { width: 0; border-color: transparent; }
+}
+
+@media (max-width: 720px) {
+  .top-in > .acct { order: 4; margin-left: auto; }
+  .top-in > .ctrls { order: 5; }
+  /* Signed in, the project picker is the only field: give it the row. */
+  .ctrls > div.fld:only-of-type { grid-column: 1 / -1; }
+  /* The live chip and bell sit left of the ⋯ button, so their menus open from
+     there and have that much less room: the 330px notifications panel hung
+     off the left edge. The width left is the screen less both 14px gutters,
+     the ⋯ button (41px) and the 10px gap before it. */
+  .top .pop.live, .top .pop.notifs { max-width: calc(100vw - 79px); }
+}
