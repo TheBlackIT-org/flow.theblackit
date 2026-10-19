@@ -10,8 +10,6 @@ node_modules/
 # the intermediate Astro writes to; `npm run build:deploy` promotes its
 # contents (index.html, _astro/, .htaccess, …) to the root, where Apache
 # serves them. Run it before committing any source change.
-/dist/
-.astro/
 .npm-cache/
 .chrome-profile*/
 shot*.png
