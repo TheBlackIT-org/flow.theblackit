@@ -23,13 +23,20 @@ Options -Indexes
 # ---- SPA fallback ---------------------------------------------------
 # The app is one page. Anything that is not a real file serves index.html so a
 # deep link or a stray path lands on the app instead of a 404.
+# ---- Serve the build from dist/ -------------------------------------
 <IfModule mod_rewrite.c>
   RewriteEngine On
   RewriteBase /
   RewriteRule ^\.htaccess$ - [F,L]
-  RewriteCond %{REQUEST_FILENAME} !-f
-  RewriteCond %{REQUEST_FILENAME} !-d
-  RewriteRule ^ index.html [L]
+
+  # A real file in dist/ (CSS, JS, images) → serve it from there
+  RewriteCond %{REQUEST_URI} !^/dist/
+  RewriteCond %{DOCUMENT_ROOT}/dist%{REQUEST_URI} -f
+  RewriteRule ^(.*)$ dist/$1 [L]
+
+  # Everything else → the app's page in dist/
+  RewriteCond %{REQUEST_URI} !^/dist/
+  RewriteRule ^ dist/index.html [L]
 </IfModule>
 
 ServerSignature Off
