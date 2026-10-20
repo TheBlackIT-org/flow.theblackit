@@ -105,13 +105,27 @@ describe('progress', () => {
     const d = domain();
     const { counts: c, total, pct } = d.progress();
     expect(total).toBe(d.projectTasks().length);
-    expect(c.DONE + c.PROG + c.REVIEW + c.BLOCK + c.TODO).toBe(total);
-    expect(pct).toBe(Math.round((c.DONE / total) * 100));
+    expect(c.DONE + c.PROG + c.REVIEW + c.BLOCK + c.REOPEN + c.TODO).toBe(total);
+    expect(pct).toBe(percentDone(d.projectTasks()));
+    // Ticked subtasks count, so it is never below the share of Done cards.
+    expect(pct).toBeGreaterThanOrEqual(Math.round((c.DONE / total) * 100));
+  });
+
+  it('counts subtask progress, not only finished cards', () => {
+    const sub = (done: boolean) => ({ id: uid(), t: 's', done, assigneeIds: [] });
+    const base = seed().tasks[0]!;
+    const list = [
+      { ...base, status: 'DONE' as const, subs: [] }, // 1
+      { ...base, status: 'PROG' as const, subs: [sub(true), sub(false)] }, // 0.5
+      { ...base, status: 'PROG' as const, subs: [sub(true), sub(true), sub(true), sub(false)] }, // 0.75
+      { ...base, status: 'TODO' as const, subs: [] }, // 0
+    ];
+    expect(percentDone(list)).toBe(56); // 2.25 / 4
   });
 
   it('treats an empty project as 0% rather than NaN', () => {
     expect(percentDone([])).toBe(0);
-    expect(counts([])).toEqual({ DONE: 0, PROG: 0, REVIEW: 0, BLOCK: 0, TODO: 0 });
+    expect(counts([])).toEqual({ DONE: 0, PROG: 0, REVIEW: 0, BLOCK: 0, REOPEN: 0, TODO: 0 });
   });
 });
 
@@ -128,7 +142,7 @@ describe('filters', () => {
 });
 
 describe('status changes', () => {
-  it('cycles TODO → PROG → REVIEW → DONE → BLOCK → TODO', () => {
+  it('cycles TODO → PROG → REVIEW → DONE, then reopens rather than skipping to BLOCK', () => {
     const d = domain();
     const t = d.findTask('t4')!;
     expect(t.status).toBe('TODO');
@@ -137,7 +151,55 @@ describe('status changes', () => {
       d.cycleStatus(t.id);
       seen.push(d.findTask(t.id)!.status);
     }
-    expect(seen).toEqual(['TODO', 'PROG', 'REVIEW', 'DONE', 'BLOCK', 'TODO']);
+    expect(seen).toEqual(['TODO', 'PROG', 'REVIEW', 'DONE', 'REOPEN', 'PROG']);
+  });
+
+  it('cycles BLOCK → TODO as before', () => {
+    const d = domain();
+    d.setStatus('t4', 'BLOCK');
+    d.cycleStatus('t4');
+    expect(d.findTask('t4')!.status).toBe('TODO');
+  });
+});
+
+describe('completed tasks', () => {
+  function doneUnowned() {
+    const d = domain();
+    d.setAssignees('t4', []);
+    d.setStatus('t4', 'DONE');
+    return d;
+  }
+
+  it('cannot be taken or assigned until reopened', () => {
+    const d = doneUnowned();
+    const other = d.workspace.members.find((m) => m.id !== d.workspace.me)!;
+    expect(d.claim('t4').ok).toBe(false);
+    d.addAssignee('t4', other.id);
+    d.reassign('t4', other.id);
+    d.setAssignees('t4', [other.id]);
+    expect(d.findTask('t4')!.assigneeIds).toEqual([]);
+    expect(d.findTask('t4')!.status).toBe('DONE');
+  });
+
+  it('reopens, then takes people and keeps showing Reopened', () => {
+    const d = doneUnowned();
+    expect(d.reopen('t4').ok).toBe(true);
+    expect(d.findTask('t4')!.status).toBe('REOPEN');
+    expect(d.findTask('t4')!.completedAt).toBeNull();
+    expect(d.claim('t4').ok).toBe(true);
+    expect(d.findTask('t4')!.assigneeIds).toEqual([d.workspace.me]);
+    expect(d.findTask('t4')!.status).toBe('REOPEN');
+  });
+
+  it('only leaves Done through Reopened', () => {
+    const d = doneUnowned();
+    d.setStatus('t4', 'PROG');
+    expect(d.findTask('t4')!.status).toBe('REOPEN');
+  });
+
+  it('refuses to reopen a task that is not completed', () => {
+    const d = domain();
+    expect(d.reopen('t4').ok).toBe(false);
   });
 
   it('stamps completedAt only while DONE', () => {

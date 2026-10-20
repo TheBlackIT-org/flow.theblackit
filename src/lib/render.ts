@@ -98,6 +98,7 @@ function statusIcon(status: string): string {
   if (status === 'PROG') return ICON.play;
   if (status === 'REVIEW') return ICON.eye;
   if (status === 'BLOCK') return ICON.pause;
+  if (status === 'REOPEN') return ICON.reopen;
   return '';
 }
 
@@ -163,12 +164,16 @@ export function renderMenuButton(account?: AuthUser | null): string {
  * statement about a dropdown rather than a person. Without a backend there is
  * no account, and the picker is the only way to be somebody.
  */
+// Every <select> in this file opens with
+// `<button><selectedcontent></selectedcontent></button>`. In browsers with
+// customisable selects that is the closed control's label, which flow.css cuts
+// short with "…" before the arrow; other browsers' parsers drop both tags.
 export function renderControls(domain: FlowDomain, account?: AuthUser | null): string {
   const P = domain.currentProject;
   const db = domain.workspace;
   return (
     (P
-      ? '<div class="fld"><span>Project</span><select data-act="project">' +
+      ? '<div class="fld"><span>Project</span><select data-act="project"><button><selectedcontent></selectedcontent></button>' +
         db.projects
           .map(
             (p) =>
@@ -176,12 +181,12 @@ export function renderControls(domain: FlowDomain, account?: AuthUser | null): s
           )
           .join('') +
         '</select></div>'
-      : '<div class="fld"><span>Project</span><select disabled><option>No project yet</option></select></div>') +
+      : '<div class="fld"><span>Project</span><select disabled><button><selectedcontent></selectedcontent></button><option>No project yet</option></select></div>') +
     // Signed in, the account is shown after the live chip instead; see
     // renderAccount.
     (account
       ? ''
-      : '<div class="fld"><span>Acting as</span><select data-act="me">' +
+      : '<div class="fld"><span>Acting as</span><select data-act="me"><button><selectedcontent></selectedcontent></button>' +
         (db.members.length
           ? db.members
               .map((m) => `<option value="${esc(m.id)}" ${m.id === db.me ? 'selected' : ''}>${esc(m.name)}</option>`)
@@ -225,7 +230,7 @@ export function renderSubBar(domain: FlowDomain): string {
     '</div>' +
     (P
       ? '<div class="filters">' +
-        '<div class="fld"><span>Member</span><select data-act="fmember">' +
+        '<div class="fld"><span>Member</span><select data-act="fmember"><button><selectedcontent></selectedcontent></button>' +
         `<option value="all"${domain.workspace.fMember === 'all' ? ' selected' : ''}>Everyone</option>` +
         domain.workspace.members
           .map(
@@ -356,7 +361,9 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
     `<span class="inline-date">${label} · ${sub}</span>` +
     '</div>' +
     `<button class="subtoggle${t.open ? ' on' : ''}" data-act="subs" data-id="${esc(t.id)}">` +
-    `<span class="chev">▼</span> ${t.subs.length ? `${doneSubs}/${t.subs.length} subtasks` : 'Subtasks'}` +
+    `<span class="chev">▼</span> ${
+      t.subs.length ? `${doneSubs}/${t.subs.length} subtasks · ${Math.round((doneSubs / t.subs.length) * 100)}%` : 'Subtasks'
+    }` +
     (t.subs.length ? `<span class="sbar"><i style="width:${(doneSubs / t.subs.length) * 100}%"></i></span>` : '') +
     '</button>' +
     `<div class="subs${t.open ? ' on' : ''}">` +
@@ -393,8 +400,18 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
     `<button data-act="sub-add" data-id="${esc(t.id)}">Add</button></div>` +
     '</div>' +
     '<div class="acts">' +
-    (!assignees.length ? `<button class="take" data-act="claim" data-id="${esc(t.id)}">Take this task</button>` : '') +
-    (assignees.length && me && !t.assigneeIds.includes(me)
+    // A completed task takes nobody new: the button stays, disabled, and
+    // Reopen is the way back in.
+    (t.status === 'DONE'
+      ? (!assignees.length
+          ? '<button class="take" disabled title="Completed · reopen it to work on it again">Take this task</button>'
+          : '') +
+        `<button class="take reopen" data-act="reopen" data-id="${esc(t.id)}">Reopen</button>`
+      : '') +
+    (t.status !== 'DONE' && !assignees.length
+      ? `<button class="take" data-act="claim" data-id="${esc(t.id)}">Take this task</button>`
+      : '') +
+    (t.status !== 'DONE' && assignees.length && me && !t.assigneeIds.includes(me)
       ? `<button class="take" data-act="assign-me" data-id="${esc(t.id)}">Assign me too</button>`
       : '') +
     (t.assigneeIds.includes(me ?? '')
@@ -402,6 +419,9 @@ export function taskRow(domain: FlowDomain, t: Task, next: Task | null): string 
       : '') +
     (t.status === 'DONE'
       ? '<span class="mchip" style="color:var(--green);border-color:rgba(53,208,127,.35)">Completed</span>'
+      : '') +
+    (t.status === 'REOPEN'
+      ? '<span class="mchip" style="color:var(--purple);border-color:rgba(192,132,252,.4)">Reopened</span>'
       : '') +
     '</div>' +
     '</div>' +
@@ -418,7 +438,7 @@ export function composerRow(domain: FlowDomain, index: number): string {
     '<div class="composer">' +
     '<input class="title" type="text" id="newTitle" placeholder="What is the next task in this chain?" />' +
     '<div class="fgrid">' +
-    `<div class="fld"><span>Type</span><select id="newType" data-role="type">${domain.workspace.types
+    `<div class="fld"><span>Type</span><select id="newType" data-role="type"><button><selectedcontent></selectedcontent></button>${domain.workspace.types
       .map((x) => `<option value="${esc(x.id)}">${esc(x.name)}</option>`)
       .join('')}<option value="__custom">Other…</option></select>` +
     '<input type="text" id="newTypeCustom" class="typefree" placeholder="Type your own" hidden />' +
@@ -439,7 +459,7 @@ export function composerRow(domain: FlowDomain, index: number): string {
       : '<span class="taken" style="border:0;padding:0">Nobody in the team yet</span>') +
     '</div></div>' +
     '<div class="fld"><span>Due date</span><input type="date" id="newDue" /></div>' +
-    `<div class="fld"><span>Priority</span><select id="newPrio">${PRIO.map(
+    `<div class="fld"><span>Priority</span><select id="newPrio"><button><selectedcontent></selectedcontent></button>${PRIO.map(
       (p) => `<option value="${esc(p.id)}"${p.id === 'normal' ? ' selected' : ''}>${p.label}</option>`,
     ).join('')}</select></div>` +
     '<div class="fld" style="grid-column:span 2"><span>Short description</span><input type="text" id="newDesc" placeholder="Optional" /></div>' +
@@ -689,7 +709,7 @@ export function editTaskBody(domain: FlowDomain, t: Task): string {
     `<div class="f"><label>Title</label><input type="text" name="title" value="${esc(t.title)}" /></div>` +
     `<div class="f"><label>Short description</label><textarea name="description" rows="3">${esc(t.description)}</textarea></div>` +
     `<div class="f"><label>Stage label</label><input type="text" name="stage" value="${esc(t.stage)}" /></div>` +
-    `<div class="f"><label>Type</label><select name="typeId" data-role="type">${domain.workspace.types
+    `<div class="f"><label>Type</label><select name="typeId" data-role="type"><button><selectedcontent></selectedcontent></button>${domain.workspace.types
       .map((x) => `<option value="${esc(x.id)}" ${x.id === t.typeId ? 'selected' : ''}>${esc(x.name)}</option>`)
       .join('')}<option value="__custom"${
       domain.workspace.types.some((x) => x.id === t.typeId) ? '' : ' selected'
@@ -697,7 +717,7 @@ export function editTaskBody(domain: FlowDomain, t: Task): string {
     `<input type="text" name="typeFree" class="typefree" placeholder="Type your own" ${
       domain.workspace.types.some((x) => x.id === t.typeId) ? 'hidden' : `value="${esc(t.typeId)}"`
     } /></div>` +
-    `<div class="f"><label>Priority</label><select name="priority">${PRIO.map(
+    `<div class="f"><label>Priority</label><select name="priority"><button><selectedcontent></selectedcontent></button>${PRIO.map(
       (p) => `<option value="${esc(p.id)}" ${p.id === t.priority ? 'selected' : ''}>${p.label}</option>`,
     ).join('')}</select></div>` +
     `<div class="f"><label>Due date</label><input type="date" name="due" value="${
@@ -804,7 +824,7 @@ export function teamBody(domain: FlowDomain): string {
         `<div class="mname"><div>${esc(m.name)}${
           m.userId ? ' <span class="mchip">signed in</span>' : m.email ? ' <span class="mchip">invited</span>' : ''
         }</div><div>${esc(meta)}</div></div>` +
-        `<select data-act="mrole" data-id="${esc(m.id)}">${['owner', 'lead', 'member']
+        `<select data-act="mrole" data-id="${esc(m.id)}"><button><selectedcontent></selectedcontent></button>${['owner', 'lead', 'member']
           .map((r) => `<option value="${r}" ${m.role === r ? 'selected' : ''}>${r}</option>`)
           .join('')}</select>` +
         `<button class="btn ghost sm" data-act="del-member" data-id="${esc(m.id)}" title="Remove from workspace">✕</button></div>`
@@ -1079,8 +1099,12 @@ export function renderSyncChip(
     `<button class="livechip ${tone}" data-act="live-menu" title="${esc(title)}" aria-haspopup="dialog">` +
     '<i class="livedot"></i>' +
     `<span>${esc(label)}</span>` +
-    (status.pending ? `<span class="livecount" title="Changes not yet saved">${status.pending}</span>` : '') +
-    (others.length ? `<span class="livecount people">${others.length}</span>` : '') +
+    // The chip shows the connection state only. Unsaved changes are not
+    // counted on it (that number climbed with every click); the hover text
+    // still says when changes are saving.
+    (others.length
+      ? `<span class="livecount people" title="${others.length} other${others.length === 1 ? '' : 's'} online">${others.length}</span>`
+      : '') +
     '</button>' +
     '<div class="pop live" data-pop="live">' +
     '<div class="lbl">Shared with</div>' +

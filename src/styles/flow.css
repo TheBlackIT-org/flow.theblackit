@@ -17,6 +17,7 @@
   --amber: #f5b544;
   --red: #ff6161;
   --blue: #5b9bff;
+  --purple: #c084fc;
   --grey: #7b8697;
   --card: rgba(255, 255, 255, 0.045);
   --card-2: rgba(255, 255, 255, 0.028);
@@ -73,18 +74,32 @@ header.top {
    the other items are nudged down by that label's height to land level with
    the selects rather than with the label — otherwise the brand and the menu
    sit visibly lower than "Team". */
-.top-in { align-items: flex-start; }
-.top-in > .ctrls { align-items: flex-start; }
+/* Every item is aligned to the bottom of the row and, if it has no caption, is
+   given the selects' 34px height with its content centred. The captioned
+   fields ("Project", "Signed in") end in a 34px control, so everything shares
+   the same centre line however tall the captions are. */
+.top-in { align-items: flex-end; }
+.top-in > .ctrls { align-items: flex-end; align-self: flex-end; }
 .top-in > .brand,
 .top-in > .hp,
-.top-in > .live { align-self: flex-start; padding-top: 20px; }
-.top-in > .menu { align-self: flex-start; padding-top: 20px; }
-.top-in > .brand { padding-top: 0; margin-top: 20px; }
+.top-in > .menu,
+.top-in > .live {
+  align-self: flex-end; height: 34px; padding-top: 0; margin-top: 0;
+  display: flex; align-items: center;
+}
+.top-in > .acct { align-self: flex-end; }
 .top-in > .menu,
 .top-in > .live { flex: none; }
-.top-in > .menu { position: relative; display: flex; align-items: center; }
+.top-in > .menu { position: relative; }
+/* The ⋯ icon is an inline SVG: left on the text baseline it rides high.
+   Centre it in a box the selects' height. */
+.top-in > .menu > .btn {
+  display: flex; align-items: center; justify-content: center;
+  height: 34px; padding: 0 12px;
+}
+.top-in > .menu > .btn svg { display: block; }
 .top-in > .live {
-  position: relative; display: flex; align-items: flex-end; justify-content: flex-end;
+  position: relative; justify-content: flex-end;
   min-width: 0; margin-left: 2px;
 }
 /* The selects give up width first; the buttons never wrap to a second line. */
@@ -304,44 +319,6 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .emptychain .et { font-size: 15.5px; font-weight: 600; margin-bottom: 8px; }
 .emptychain .ed { font-size: 12.5px; color: var(--muted); max-width: 420px; margin: 0 auto 20px; line-height: 1.65; }
 
-@media (max-width: 720px) {
-  .wrap { padding: 0 14px 90px; }
-  .top-in { padding: 12px 14px; gap: 10px; }
-  .sub { padding: 14px 14px 0; gap: 14px; }
-  /* Mobile: brand and the right-hand cluster on row one, controls below. */
-  .top-in { flex-wrap: wrap; row-gap: 8px; }
-  .top-in > .brand { order: 1; }
-  .top-in > .live { order: 2; margin-left: auto; }
-  .top-in > .menu { order: 3; }
-  .top-in > .hp { display: none; }
-  .top-in > .ctrls {
-    order: 4; flex: 1 1 100%; justify-content: flex-start;
-    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
-  }
-  .ctrls select { max-width: none; width: 100%; }
-  .row { grid-template-columns: 34px 1fr; padding-bottom: 20px; }
-  .date { display: none; }
-  .rail { width: 34px; }
-  .node { width: 30px; height: 30px; }
-  .node svg { width: 13px; height: 13px; }
-  .seg { top: 35px; }
-  .card { padding: 13px 13px 14px; }
-  .card h3 { font-size: 14.5px; }
-  .addend { margin-left: 0; }
-  .composer .fgrid { grid-template-columns: 1fr 1fr; }
-  .inline-date { display: inline-flex !important; }
-  .pop { right: 8px; width: calc(100% - 16px); }
-  .top-in.scrolled .hp .hpbar { width: 62px; }
-  .top-in.scrolled .hp .hplbl { display: none; }
-  .fab { right: 16px; bottom: 16px; width: 50px; height: 50px; }
-  .chat { right: 12px; left: 12px; bottom: 78px; width: auto; height: min(72vh, 500px); }
-  .dragghost .gt { max-width: 200px; }
-  .wopts { grid-template-columns: 1fr; }
-  .wcard h2 { font-size: 25px; }
-  .welcome { padding: 18px; }
-  .emptychain { padding: 26px 16px; }
-  .top-in.scrolled .hide-scroll { display: none; }
-}
 
 .inline-date { display: none; font-size: 10.5px; color: var(--muted-2); align-items: center; gap: 5px; }
 
@@ -535,6 +512,18 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .acts { display: flex; gap: 8px; align-items: center; margin-top: 13px; flex-wrap: wrap; }
 .take { border: 1px solid rgba(46, 230, 197, 0.45); color: var(--teal); background: rgba(46, 230, 197, 0.09); border-radius: 10px; padding: 7px 12px; font-size: 12.5px; font-weight: 600; }
 .take:hover { background: rgba(46, 230, 197, 0.18); }
+/* Completed: "Take this task" stays visible but cannot be used. */
+.take:disabled {
+  cursor: not-allowed; color: var(--muted-2); border-color: var(--stroke);
+  background: rgba(255, 255, 255, 0.03);
+}
+.take.reopen { color: var(--purple); border-color: rgba(192, 132, 252, 0.45); background: rgba(192, 132, 252, 0.09); }
+.take.reopen:hover { background: rgba(192, 132, 252, 0.18); }
+
+/* ---------- Reopened status ---------- */
+.card.reopen { border-color: rgba(192, 132, 252, 0.32); }
+.node.reopen { border-color: var(--purple); background: radial-gradient(circle at 50% 40%, rgba(192, 132, 252, 0.4), rgba(192, 132, 252, 0.1)); color: #f6eeff; box-shadow: 0 0 0 1px rgba(192, 132, 252, 0.28), 0 0 18px rgba(192, 132, 252, 0.32); }
+.seg.reopen { background: linear-gradient(180deg, rgba(192, 132, 252, 0.85), rgba(192, 132, 252, 0.4)); }
 .kebab { position: absolute; top: 11px; right: 11px; width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: var(--muted-2); }
 .kebab:hover { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
 .pop { position: absolute; top: 44px; right: 11px; z-index: 20; width: 232px; display: none; background: #141821; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 13px; box-shadow: 0 20px 44px rgba(0, 0, 0, 0.55); padding: 8px; }
@@ -596,7 +585,7 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .f { margin-bottom: 13px; }
 .f label { display: block; font-size: 10px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted-2); margin-bottom: 5px; }
 .f input, .f select, .f textarea { width: 100%; }
-.toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 96; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+.toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 96; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; max-height: 40vh; overflow: hidden; max-width: calc(100vw - 32px); }
 .toast div { background: #151b25; border: 1px solid rgba(46, 230, 197, 0.3); color: var(--ink); padding: 10px 15px; border-radius: 11px; font-size: 12.5px; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5); animation: rowIn 0.22s ease-out both; }
 
 /* Subtask checkbox and the composer's title field. */
@@ -656,6 +645,74 @@ select { cursor: pointer; }
 select { color-scheme: dark; background-color: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.16); }
 select:focus { border-color: rgba(46, 230, 197, 0.45); }
 select option, select optgroup { background-color: #141821; color: var(--ink); }
+
+/* Themed open list. Where the browser supports customisable selects the open
+   list is drawn like the app's own menus (.pop): dark panel, rounded corners,
+   soft border, teal for the chosen option. Elsewhere the dark native list
+   above still applies. The <select> stays a real select, so keyboard use,
+   screen readers and every `change` handler work as before. */
+@supports (appearance: base-select) {
+  select, ::picker(select) { appearance: base-select; }
+  /* The arrow is pinned to the right edge with room kept for it, so a long
+     value (a project name in a narrow header) is cut short instead of
+     pushing the arrow out of the box. */
+  select {
+    position: relative; display: inline-flex; align-items: center;
+    padding-right: 28px;
+  }
+  select:hover:not(:disabled) { background-color: rgba(255, 255, 255, 0.1); }
+  select:disabled { cursor: default; opacity: 0.6; }
+  select::picker-icon {
+    content: ''; width: 9px; height: 9px; flex: none;
+    position: absolute; right: 10px; top: calc(50% - 4.5px);
+    background: currentColor; color: var(--muted);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 3.5 5 7l3.5-3.5' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 3.5 5 7l3.5-3.5' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    transition: transform 0.16s ease;
+  }
+  select:open::picker-icon { transform: rotate(180deg); color: var(--teal); }
+  /* The closed control's label (render.ts puts a <button><selectedcontent>
+     at the top of every select). It takes the space left of the arrow and
+     ends in "…" when the value is longer. */
+  select > button {
+    all: unset; display: block; flex: 1 1 auto; min-width: 0;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  select > button selectedcontent { display: inline; }
+  /* Smaller selects set their own padding; keep the arrow's room there too. */
+  .mrow select, .composer select { padding-right: 24px; }
+  .mrow select::picker-icon, .composer select::picker-icon { right: 8px; }
+  select:open { border-color: rgba(46, 230, 197, 0.45); }
+
+  ::picker(select) {
+    margin-top: 6px; padding: 6px; min-width: anchor-size(width);
+    max-height: min(320px, 60vh); overflow-y: auto;
+    background: #141821; color: var(--ink);
+    border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 13px;
+    box-shadow: 0 20px 44px rgba(0, 0, 0, 0.55);
+    opacity: 0; transform: translateY(-4px);
+    transition: opacity 0.16s ease-out, transform 0.16s ease-out,
+      overlay 0.16s allow-discrete, display 0.16s allow-discrete;
+  }
+  select:open::picker(select) { opacity: 1; transform: none; }
+  @starting-style {
+    select:open::picker(select) { opacity: 0; transform: translateY(-4px); }
+  }
+
+  select option {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 8px;
+    font-size: 12.5px; color: #c8d0dc; background: transparent;
+    cursor: pointer; white-space: nowrap;
+  }
+  select option:hover,
+  select option:focus-visible { background: rgba(255, 255, 255, 0.07); color: var(--ink); outline: none; }
+  select option:checked { color: var(--teal); background: rgba(46, 230, 197, 0.1); font-weight: 500; }
+  select option:disabled { color: var(--muted-2); cursor: default; }
+  /* The tick the browser puts beside the chosen option. */
+  select option::checkmark { content: '✓'; order: 1; margin-left: auto; color: var(--teal); font-size: 11px; }
+  select optgroup { background: transparent; color: var(--muted-2); font-size: 10px; letter-spacing: 0.07em; text-transform: uppercase; }
+}
 .btn {
   border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.05); border-radius: 10px;
   padding: 7px 12px; font-size: 12.5px; font-weight: 500; color: var(--ink); white-space: nowrap;
@@ -706,4 +763,122 @@ select option, select optgroup { background-color: #141821; color: var(--ink); }
      off the left edge. The width left is the screen less both 14px gutters,
      the ⋯ button (41px) and the 10px gap before it. */
   .top .pop.live, .top .pop.notifs { max-width: calc(100vw - 79px); }
+}
+
+/* ---------- phones ----------
+   Kept at the end of the file: the chain and card rules above are the
+   desktop defaults, and these must come after them to override them. */
+@media (max-width: 720px) {
+  .wrap { padding: 0 14px 90px; }
+  .top-in { padding: 12px 14px; gap: 10px; }
+  .sub { padding: 14px 14px 0; gap: 14px; }
+  /* Mobile: brand and the right-hand cluster on row one, controls below. */
+  .top-in { flex-wrap: wrap; row-gap: 8px; }
+  .top-in > .brand { order: 1; }
+  .top-in > .live { order: 2; margin-left: auto; }
+  .top-in > .menu { order: 3; }
+  .top-in > .hp { display: none; }
+  .top-in > .ctrls {
+    order: 5; flex: 1 1 100%; justify-content: flex-start;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+  }
+  .ctrls select { max-width: none; width: 100%; }
+  .ctrls .fld { min-width: 0; }
+  .ctrls .btn { width: 100%; }
+  .row { grid-template-columns: 34px 1fr; padding-bottom: 20px; }
+  .date { display: none; }
+  .rail { width: 34px; }
+  .node { width: 30px; height: 30px; }
+  .node svg { width: 13px; height: 13px; }
+  .seg { top: 35px; }
+  .card { padding: 13px 13px 14px; }
+  .card h3 { font-size: 14.5px; }
+  .addend { margin-left: 0; }
+  .composer .fgrid { grid-template-columns: 1fr 1fr; }
+  .inline-date { display: inline-flex !important; }
+  .pop { right: 8px; width: calc(100% - 16px); }
+  .top-in.scrolled .hp .hpbar { width: 62px; }
+  .top-in.scrolled .hp .hplbl { display: none; }
+  .fab { right: 16px; bottom: 16px; width: 50px; height: 50px; }
+  .chat { right: 12px; left: 12px; bottom: 78px; width: auto; height: min(72vh, 500px); }
+  .dragghost .gt { max-width: 200px; }
+  .wopts { grid-template-columns: 1fr; }
+  .wcard h2 { font-size: 25px; }
+  .welcome { padding: 18px; }
+  .emptychain { padding: 26px 16px; }
+  .top-in.scrolled .hide-scroll { display: none; }
+  .hint { font-size: 11.5px; }
+}
+
+/* ---------- every width ----------
+   A grid or flex child defaults to "never narrower than my content", so one
+   long title or row of chips could push the card, and the page, wider than
+   the screen. Let them shrink and wrap instead. */
+html, body { overflow-x: clip; }
+.row > .card, .sub > *, .progbox { min-width: 0; }
+.card h3, .desc { overflow-wrap: anywhere; }
+.chead { flex-wrap: wrap; row-gap: 6px; }
+/* A select shows its value on one line; a long project name is cut short
+   rather than doubling the control's height. */
+select { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* ---------- tablets and small laptops (721–900px) ----------
+   One row no longer fits brand, both pickers, both buttons, progress, menu,
+   live chip and account. Brand and the right-hand cluster stay on row one;
+   the pickers and buttons get a full-width row of their own. */
+@media (min-width: 721px) and (max-width: 900px) {
+  .top-in { flex-wrap: wrap; row-gap: 10px; }
+  .top-in > .brand { order: 1; margin-right: auto; }
+  .top-in > .hp { order: 2; }
+  .top-in > .menu { order: 3; }
+  .top-in > .live { order: 4; }
+  .top-in > .acct { order: 5; }
+  .top-in > .ctrls { order: 6; flex: 1 1 100%; }
+  .ctrls .fld { flex: 1 1 0; }
+  .ctrls select { max-width: none; width: 100%; }
+  /* "Signed in" loses its caption so it sits on row one's line. */
+  .acct .fld { grid-template-rows: 34px; }
+  .acct .fld > span { display: none; }
+  .wrap, .sub { padding-left: 18px; padding-right: 18px; }
+}
+
+/* ---------- small phones and folded foldables (≤ 380px) ---------- */
+@media (max-width: 380px) {
+  .top-in { padding: 10px 12px; gap: 8px; }
+  .wrap { padding: 0 10px 90px; }
+  .sub { padding: 12px 12px 0; }
+  .brand { font-size: 14px; gap: 7px; }
+  /* The live chip keeps its coloured dot and counts; the word goes. */
+  .livechip { padding: 5px 9px; }
+  .livechip > span:not(.livecount) { display: none; }
+  .row { grid-template-columns: 28px minmax(0, 1fr); }
+  .rail { width: 28px; }
+  .node { width: 26px; height: 26px; }
+  .seg { top: 31px; }
+  .card { padding: 12px 11px 13px; }
+  .pct { font-size: 22px; }
+  .composer .fgrid { grid-template-columns: 1fr; }
+  .composer .fld[style*="span 2"] { grid-column: auto !important; }
+}
+
+/* Card head: the ⋮ menu is pinned to the card's top-right corner, so the key
+   and tags leave room for it instead of running underneath. */
+.card > .chead { padding-right: 34px; }
+
+/* Phones and tablets: the wrapped header is tall. While scrolling down only
+   its first row (brand, live chip, ⋯) stays; the pickers and buttons hide
+   and come back on scroll up (app.ts `tuckHeader`). The header is fixed and
+   the body keeps a spacer of its full height (--headh, measured in app.ts),
+   so hiding the controls never moves the page underneath. */
+@media (max-width: 900px) {
+  header.top { position: fixed; left: 0; right: 0; top: 0; }
+  body { padding-top: var(--headh, 0px); }
+  header.top.tucked .top-in > .ctrls { display: none; }
+  header.top.tucked .top-in { row-gap: 0; }
+}
+
+/* Very narrow (Galaxy Fold folded, 280px): pickers stack. */
+@media (max-width: 320px) {
+  .top-in > .ctrls { grid-template-columns: minmax(0, 1fr); }
+  .ctrls > div.fld:only-of-type { grid-column: auto; }
 }

@@ -684,17 +684,45 @@ export class BlackitFlowApp {
     }, 40);
   }
 
+  /**
+   * Short notices at the bottom of the screen. They stay a small stack:
+   * a newer notice about the same thing (e.g. "T-8 → Done" after
+   * "T-8 → In Review") replaces the old one instead of piling up, and no more
+   * than TOAST_MAX show at once. The full history lives in the activity panel.
+   */
+  private static readonly TOAST_MAX = 3;
+  private toastTimers = new WeakMap<HTMLElement, number>();
+
   private toast(message: string): void {
-    const host = document.querySelector(HOOKS.toast);
+    const host = document.querySelector<HTMLElement>(HOOKS.toast);
     if (!host) return;
-    const d = document.createElement('div');
+    // What the notice is about: the part before the arrow, or the whole text.
+    const topic = message.includes('→') ? message.split('→')[0]!.trim() : message;
+    let d = Array.from(host.children).find(
+      (c): c is HTMLElement => (c as HTMLElement).dataset.topic === topic,
+    );
+    if (d) {
+      window.clearTimeout(this.toastTimers.get(d));
+      d.style.opacity = '';
+      host.appendChild(d); // newest goes to the bottom
+    } else {
+      d = document.createElement('div');
+      d.dataset.topic = topic;
+      host.appendChild(d);
+    }
     d.textContent = message;
-    host.appendChild(d);
-    window.setTimeout(() => {
-      d.style.opacity = '0';
-      d.style.transition = 'opacity .3s';
-      window.setTimeout(() => d.remove(), 320);
-    }, 2300);
+    while (host.children.length > BlackitFlowApp.TOAST_MAX) host.firstElementChild?.remove();
+    const el = d;
+    this.toastTimers.set(
+      el,
+      window.setTimeout(() => {
+        el.style.transition = 'opacity .3s';
+        el.style.opacity = '0';
+        window.setTimeout(() => {
+          if (el.style.opacity === '0') el.remove();
+        }, 320);
+      }, 2300),
+    );
   }
 
   private exportJson(): void {
@@ -755,11 +783,51 @@ export class BlackitFlowApp {
   /* ------------------------------ scroll ------------------------------- */
 
   scrollState(): void {
+    this.tuckHeader();
     const next = window.scrollY > 130;
     if (next === this.scrolled) return;
     this.scrolled = next;
     document.querySelector('.top-in')?.classList.toggle('scrolled', next);
     if (next) this.animateHeadProgress();
+  }
+
+  /**
+   * On narrow screens the header is tall (its controls wrap onto extra rows),
+   * so while scrolling down only its first row stays and the controls hide;
+   * any scroll up brings them back. The header is fixed there and the body
+   * keeps a spacer of the full header height, so the page never jumps.
+   * Wide screens ignore the class; see `header.top.tucked` in flow.css.
+   */
+  private lastScrollY = 0;
+  private headerSized = false;
+
+  /** Keeps `--headh` equal to the full (untucked) header height. */
+  private sizeHeader(header: HTMLElement): void {
+    if (this.headerSized || typeof ResizeObserver === 'undefined') return;
+    this.headerSized = true;
+    const measure = () => {
+      if (header.classList.contains('tucked')) return;
+      document.documentElement.style.setProperty('--headh', `${header.offsetHeight}px`);
+    };
+    new ResizeObserver(measure).observe(header);
+    measure();
+  }
+
+  private tuckHeader(): void {
+    const header = document.querySelector<HTMLElement>('header.top');
+    if (!header) return;
+    this.sizeHeader(header);
+    const y = Math.max(0, window.scrollY);
+    const dy = y - this.lastScrollY;
+    // Ignore tiny moves so a resting finger does not make it flicker.
+    if (Math.abs(dy) < 6) return;
+    this.lastScrollY = y;
+    // Keep it in view while one of its menus is open or a control has focus,
+    // and near the top of the page.
+    const busy =
+      header.querySelector('.pop.on') !== null || header.contains(document.activeElement) || this.drag?.active;
+    const tuck = dy > 0 && y > header.offsetHeight && !busy;
+    header.classList.toggle('tucked', tuck);
   }
 
   private animateHeadProgress(): void {
@@ -1041,6 +1109,7 @@ function statusLabelOf(id: string): string {
     PROG: 'In Progress',
     REVIEW: 'In Review',
     BLOCK: 'Blocked',
+    REOPEN: 'Reopened',
     TODO: 'Not Taken',
   };
   return labels[id] ?? id;

@@ -16,6 +16,9 @@ export const STATUS: StatusDef[] = [
   { id: 'PROG', label: 'In Progress', cls: 'prog', color: 'var(--teal)', line: 'prog' },
   { id: 'REVIEW', label: 'In Review', cls: 'review', color: 'var(--amber)', line: 'review' },
   { id: 'BLOCK', label: 'Blocked', cls: 'block', color: 'var(--red)', line: 'block' },
+  // A finished task somebody has to work on again. Done tasks only leave Done
+  // through here; see FlowDomain.setStatus.
+  { id: 'REOPEN', label: 'Reopened', cls: 'reopen', color: 'var(--purple)', line: 'reopen' },
   { id: 'TODO', label: 'Not Taken', cls: 'todo', color: 'var(--grey)', line: 'todo' },
 ];
 
@@ -52,6 +55,8 @@ export const ICON = {
   check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
   play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5l10.5 6.5L8 18.5z"/></svg>',
   eye: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="2.6"/></svg>',
+  reopen:
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4.48 14.74A8 8 0 1 0 7.41 5.45"/><path d="M4.95 7.17 9.02 7.74 5.8 3.16z" fill="currentColor" stroke-width="1.2"/></svg>',
   pause:
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M9.5 6v12M14.5 6v12"/></svg>',
   person:
