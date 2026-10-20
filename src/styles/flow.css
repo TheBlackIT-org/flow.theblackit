@@ -73,18 +73,32 @@ header.top {
    the other items are nudged down by that label's height to land level with
    the selects rather than with the label — otherwise the brand and the menu
    sit visibly lower than "Team". */
-.top-in { align-items: flex-start; }
-.top-in > .ctrls { align-items: flex-start; }
+/* Every item is aligned to the bottom of the row and, if it has no caption, is
+   given the selects' 34px height with its content centred. The captioned
+   fields ("Project", "Signed in") end in a 34px control, so everything shares
+   the same centre line however tall the captions are. */
+.top-in { align-items: flex-end; }
+.top-in > .ctrls { align-items: flex-end; align-self: flex-end; }
 .top-in > .brand,
 .top-in > .hp,
-.top-in > .live { align-self: flex-start; padding-top: 20px; }
-.top-in > .menu { align-self: flex-start; padding-top: 20px; }
-.top-in > .brand { padding-top: 0; margin-top: 20px; }
+.top-in > .menu,
+.top-in > .live {
+  align-self: flex-end; height: 34px; padding-top: 0; margin-top: 0;
+  display: flex; align-items: center;
+}
+.top-in > .acct { align-self: flex-end; }
 .top-in > .menu,
 .top-in > .live { flex: none; }
-.top-in > .menu { position: relative; display: flex; align-items: center; }
+.top-in > .menu { position: relative; }
+/* The ⋯ icon is an inline SVG: left on the text baseline it rides high.
+   Centre it in a box the selects' height. */
+.top-in > .menu > .btn {
+  display: flex; align-items: center; justify-content: center;
+  height: 34px; padding: 0 12px;
+}
+.top-in > .menu > .btn svg { display: block; }
 .top-in > .live {
-  position: relative; display: flex; align-items: flex-end; justify-content: flex-end;
+  position: relative; justify-content: flex-end;
   min-width: 0; margin-left: 2px;
 }
 /* The selects give up width first; the buttons never wrap to a second line. */
@@ -656,6 +670,59 @@ select { cursor: pointer; }
 select { color-scheme: dark; background-color: rgba(255, 255, 255, 0.07); border-color: rgba(255, 255, 255, 0.16); }
 select:focus { border-color: rgba(46, 230, 197, 0.45); }
 select option, select optgroup { background-color: #141821; color: var(--ink); }
+
+/* Themed open list. Where the browser supports customisable selects the open
+   list is drawn like the app's own menus (.pop): dark panel, rounded corners,
+   soft border, teal for the chosen option. Elsewhere the dark native list
+   above still applies. The <select> stays a real select, so keyboard use,
+   screen readers and every `change` handler work as before. */
+@supports (appearance: base-select) {
+  select, ::picker(select) { appearance: base-select; }
+  select {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding-right: 9px;
+  }
+  select:hover:not(:disabled) { background-color: rgba(255, 255, 255, 0.1); }
+  select:disabled { cursor: default; opacity: 0.6; }
+  select::picker-icon {
+    content: ''; width: 9px; height: 9px; margin-left: auto; flex: none;
+    background: currentColor; color: var(--muted);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 3.5 5 7l3.5-3.5' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 3.5 5 7l3.5-3.5' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
+    transition: transform 0.16s ease;
+  }
+  select:open::picker-icon { transform: rotate(180deg); color: var(--teal); }
+  select:open { border-color: rgba(46, 230, 197, 0.45); }
+
+  ::picker(select) {
+    margin-top: 6px; padding: 6px; min-width: anchor-size(width);
+    max-height: min(320px, 60vh); overflow-y: auto;
+    background: #141821; color: var(--ink);
+    border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 13px;
+    box-shadow: 0 20px 44px rgba(0, 0, 0, 0.55);
+    opacity: 0; transform: translateY(-4px);
+    transition: opacity 0.16s ease-out, transform 0.16s ease-out,
+      overlay 0.16s allow-discrete, display 0.16s allow-discrete;
+  }
+  select:open::picker(select) { opacity: 1; transform: none; }
+  @starting-style {
+    select:open::picker(select) { opacity: 0; transform: translateY(-4px); }
+  }
+
+  select option {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 10px; border-radius: 8px;
+    font-size: 12.5px; color: #c8d0dc; background: transparent;
+    cursor: pointer; white-space: nowrap;
+  }
+  select option:hover,
+  select option:focus-visible { background: rgba(255, 255, 255, 0.07); color: var(--ink); outline: none; }
+  select option:checked { color: var(--teal); background: rgba(46, 230, 197, 0.1); font-weight: 500; }
+  select option:disabled { color: var(--muted-2); cursor: default; }
+  /* The tick the browser puts beside the chosen option. */
+  select option::checkmark { content: '✓'; order: 1; margin-left: auto; color: var(--teal); font-size: 11px; }
+  select optgroup { background: transparent; color: var(--muted-2); font-size: 10px; letter-spacing: 0.07em; text-transform: uppercase; }
+}
 .btn {
   border: 1px solid var(--stroke); background: rgba(255, 255, 255, 0.05); border-radius: 10px;
   padding: 7px 12px; font-size: 12.5px; font-weight: 500; color: var(--ink); white-space: nowrap;
