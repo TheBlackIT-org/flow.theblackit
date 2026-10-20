@@ -7,7 +7,7 @@
  * `JSON.stringify` into localStorage under `blackit_flow_v1`.
  */
 
-export type StatusId = 'DONE' | 'PROG' | 'REVIEW' | 'BLOCK' | 'TODO';
+export type StatusId = 'DONE' | 'PROG' | 'REVIEW' | 'BLOCK' | 'REOPEN' | 'TODO';
 export type PriorityId = 'low' | 'normal' | 'high' | 'urgent';
 export type RoleId = 'owner' | 'lead' | 'member';
 
@@ -190,5 +190,6 @@ export interface ProgressCounts {
   PROG: number;
   REVIEW: number;
   BLOCK: number;
+  REOPEN: number;
   TODO: number;
 }

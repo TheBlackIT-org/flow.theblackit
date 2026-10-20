@@ -151,16 +151,32 @@ export function relAgo(ms: number, now: number = Date.now()): string {
 }
 
 export function counts(list: Task[]): ProgressCounts {
-  const c: ProgressCounts = { DONE: 0, PROG: 0, REVIEW: 0, BLOCK: 0, TODO: 0 };
+  const c: ProgressCounts = { DONE: 0, PROG: 0, REVIEW: 0, BLOCK: 0, REOPEN: 0, TODO: 0 };
   list.forEach((t) => {
     c[t.status] = (c[t.status] ?? 0) + 1;
   });
   return c;
 }
 
+/**
+ * How far one card is, from 0 to 1. Done is finished whatever its checklist
+ * says; otherwise it is the share of its subtasks ticked off. A card with no
+ * subtasks has nothing to measure, so it counts as 0 until it is Done.
+ */
+export function taskProgress(t: Task): number {
+  if (t.status === 'DONE') return 1;
+  if (!t.subs.length) return 0;
+  return t.subs.filter((s) => s.done).length / t.subs.length;
+}
+
+/**
+ * The project's completion: the average of every card's own progress, so
+ * ticking subtasks moves the number before the whole card is Done.
+ */
 export function percentDone(list: Task[]): number {
   if (!list.length) return 0;
-  return Math.round((counts(list).DONE / list.length) * 100);
+  const sum = list.reduce((acc, t) => acc + taskProgress(t), 0);
+  return Math.round((sum / list.length) * 100);
 }
 
 /**
@@ -694,7 +710,7 @@ export class FlowDomain {
   progress(): { counts: ProgressCounts; total: number; pct: number } {
     const list = this.projectTasks();
     const c = counts(list);
-    return { counts: c, total: list.length, pct: list.length ? Math.round((c.DONE / list.length) * 100) : 0 };
+    return { counts: c, total: list.length, pct: percentDone(list) };
   }
 
   /* -------- mutations -------- */
@@ -702,6 +718,9 @@ export class FlowDomain {
   setStatus(id: string, status: StatusId): Task | null {
     const t = this.findTask(id);
     if (!t) return null;
+    // A finished task is reopened before anyone works on it again, so any move
+    // out of Done lands on Reopened and the card says so.
+    if (t.status === 'DONE' && status !== 'DONE') status = 'REOPEN';
     t.status = status;
     if (status === 'DONE' && !t.completedAt) t.completedAt = Date.now();
     if (status !== 'DONE') t.completedAt = null;
@@ -714,9 +733,25 @@ export class FlowDomain {
     return t;
   }
 
+  /** Bring a finished task back so somebody can work on it again. */
+  reopen(id: string): { ok: boolean; message: string; task: Task | null } {
+    const t = this.findTask(id);
+    if (!t) return { ok: false, message: 'Task not found', task: null };
+    if (t.status !== 'DONE') return { ok: false, message: `${t.key} is not completed`, task: t };
+    this.setStatus(id, 'REOPEN');
+    return { ok: true, message: `${t.key} reopened · assign someone to work on it`, task: t };
+  }
+
+  /** Completed tasks take nobody new until they are reopened. */
+  private closedMessage(t: Task): string | null {
+    return t.status === 'DONE' ? `${t.key} is completed · reopen it first` : null;
+  }
+
   cycleStatus(id: string): Task | null {
     const t = this.findTask(id);
     if (!t) return null;
+    // Reopened work picks up where it left off: back in progress.
+    if (t.status === 'REOPEN') return this.setStatus(id, 'PROG');
     const i = (CYCLE as readonly string[]).indexOf(t.status);
     return this.setStatus(id, CYCLE[(i + 1) % CYCLE.length] as StatusId);
   }
@@ -726,6 +761,8 @@ export class FlowDomain {
     const t = this.findTask(id);
     if (!t) return { ok: false, message: 'Task not found', task: null };
     if (!this.workspace.me) return { ok: false, message: 'Add yourself in Team first', task: t };
+    const closed = this.closedMessage(t);
+    if (closed) return { ok: false, message: closed, task: t };
     const me = this.member(this.workspace.me);
     if (t.assigneeIds.includes(this.workspace.me)) {
       return { ok: false, message: `Already on ${t.key}`, task: t };
@@ -765,6 +802,8 @@ export class FlowDomain {
     if (!t) return { message: 'Task not found', task: null };
     const m = this.member(memberId);
     if (!m) return { message: 'Member not found', task: t };
+    const closed = this.closedMessage(t);
+    if (closed) return { message: closed, task: t };
     if (t.assigneeIds.includes(memberId)) {
       return { message: `${m.name} is already on ${t.key}`, task: t };
     }
@@ -827,6 +866,8 @@ export class FlowDomain {
     }
     const m = this.member(memberId);
     if (!m) return { message: 'Member not found', task: t };
+    const closed = this.closedMessage(t);
+    if (closed) return { message: closed, task: t };
     const fromPool = t.assigneeIds.length === 0;
     t.assigneeIds = [memberId];
     if (fromPool) {
@@ -849,6 +890,9 @@ export class FlowDomain {
     const added = clean.filter((mid) => !t.assigneeIds.includes(mid));
     const removed = t.assigneeIds.filter((mid) => !clean.includes(mid));
     if (!added.length && !removed.length) return { message: 'No change', task: t };
+    // Taking people off a finished task is fine; adding anyone is not.
+    const closed = added.length ? this.closedMessage(t) : null;
+    if (closed) return { message: closed, task: t };
 
     if (!clean.length) {
       t.assigneeIds = [];

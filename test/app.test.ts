@@ -108,7 +108,7 @@ describe('boot', () => {
     expect($$('.row[data-task]').length).toBe(15); // project p1 has 15 tasks
     expect($('#ctrls').querySelectorAll('select').length).toBe(2);
     expect($('#sub .pct').textContent).toContain('%');
-    expect($('#sub').querySelectorAll('.legend span').length).toBe(5);
+    expect($('#sub').querySelectorAll('.legend span').length).toBe(6); // includes Reopened
   });
 
   it('shows the welcome screen when there is no saved workspace', async () => {
@@ -121,7 +121,8 @@ describe('boot', () => {
 
   it('shows the compact progress percentage in the header at rest', async () => {
     const hp = $('#hp');
-    expect(hp.querySelector('.hppct')?.textContent).toBe('20%');
+    // 3 Done cards plus partly ticked subtasks on others: 36%, not 3/15 = 20%.
+    expect(hp.querySelector('.hppct')?.textContent).toBe('36%');
     expect(hp.querySelector('.hpbar')).not.toBeNull();
     // It only expands into the bar + count once the page is scrolled.
     expect($('.top-in').classList.contains('scrolled')).toBe(false);

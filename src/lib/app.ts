@@ -684,17 +684,45 @@ export class BlackitFlowApp {
     }, 40);
   }
 
+  /**
+   * Short notices at the bottom of the screen. They stay a small stack:
+   * a newer notice about the same thing (e.g. "T-8 → Done" after
+   * "T-8 → In Review") replaces the old one instead of piling up, and no more
+   * than TOAST_MAX show at once. The full history lives in the activity panel.
+   */
+  private static readonly TOAST_MAX = 3;
+  private toastTimers = new WeakMap<HTMLElement, number>();
+
   private toast(message: string): void {
-    const host = document.querySelector(HOOKS.toast);
+    const host = document.querySelector<HTMLElement>(HOOKS.toast);
     if (!host) return;
-    const d = document.createElement('div');
+    // What the notice is about: the part before the arrow, or the whole text.
+    const topic = message.includes('→') ? message.split('→')[0]!.trim() : message;
+    let d = Array.from(host.children).find(
+      (c): c is HTMLElement => (c as HTMLElement).dataset.topic === topic,
+    );
+    if (d) {
+      window.clearTimeout(this.toastTimers.get(d));
+      d.style.opacity = '';
+      host.appendChild(d); // newest goes to the bottom
+    } else {
+      d = document.createElement('div');
+      d.dataset.topic = topic;
+      host.appendChild(d);
+    }
     d.textContent = message;
-    host.appendChild(d);
-    window.setTimeout(() => {
-      d.style.opacity = '0';
-      d.style.transition = 'opacity .3s';
-      window.setTimeout(() => d.remove(), 320);
-    }, 2300);
+    while (host.children.length > BlackitFlowApp.TOAST_MAX) host.firstElementChild?.remove();
+    const el = d;
+    this.toastTimers.set(
+      el,
+      window.setTimeout(() => {
+        el.style.transition = 'opacity .3s';
+        el.style.opacity = '0';
+        window.setTimeout(() => {
+          if (el.style.opacity === '0') el.remove();
+        }, 320);
+      }, 2300),
+    );
   }
 
   private exportJson(): void {
@@ -1081,6 +1109,7 @@ function statusLabelOf(id: string): string {
     PROG: 'In Progress',
     REVIEW: 'In Review',
     BLOCK: 'Blocked',
+    REOPEN: 'Reopened',
     TODO: 'Not Taken',
   };
   return labels[id] ?? id;

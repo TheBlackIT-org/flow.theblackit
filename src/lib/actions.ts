@@ -197,6 +197,13 @@ export class FlowActions {
         break;
       }
 
+      case 'reopen': {
+        const r = domain.reopen(id);
+        this.ctx.toast(r.message);
+        if (r.ok) this.refresh();
+        break;
+      }
+
       case 'claim': {
         const r = domain.claim(id);
         this.ctx.toast(r.message);
@@ -206,7 +213,8 @@ export class FlowActions {
 
       case 'st': {
         const t = domain.setStatus(id, val as never);
-        this.ctx.toast(`${t ? t.key : 'Task'} → ${statusLabel(val)}`);
+        // The domain may land somewhere else (Done → Reopened), so say where.
+        this.ctx.toast(`${t ? t.key : 'Task'} → ${statusLabel(t ? t.status : val)}`);
         this.refresh();
         break;
       }
@@ -936,6 +944,7 @@ function statusLabel(id: string): string {
     PROG: 'In Progress',
     REVIEW: 'In Review',
     BLOCK: 'Blocked',
+    REOPEN: 'Reopened',
     TODO: 'Not Taken',
   };
   return labels[id] ?? id;

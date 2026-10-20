@@ -17,6 +17,7 @@
   --amber: #f5b544;
   --red: #ff6161;
   --blue: #5b9bff;
+  --purple: #c084fc;
   --grey: #7b8697;
   --card: rgba(255, 255, 255, 0.045);
   --card-2: rgba(255, 255, 255, 0.028);
@@ -511,6 +512,18 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .acts { display: flex; gap: 8px; align-items: center; margin-top: 13px; flex-wrap: wrap; }
 .take { border: 1px solid rgba(46, 230, 197, 0.45); color: var(--teal); background: rgba(46, 230, 197, 0.09); border-radius: 10px; padding: 7px 12px; font-size: 12.5px; font-weight: 600; }
 .take:hover { background: rgba(46, 230, 197, 0.18); }
+/* Completed: "Take this task" stays visible but cannot be used. */
+.take:disabled {
+  cursor: not-allowed; color: var(--muted-2); border-color: var(--stroke);
+  background: rgba(255, 255, 255, 0.03);
+}
+.take.reopen { color: var(--purple); border-color: rgba(192, 132, 252, 0.45); background: rgba(192, 132, 252, 0.09); }
+.take.reopen:hover { background: rgba(192, 132, 252, 0.18); }
+
+/* ---------- Reopened status ---------- */
+.card.reopen { border-color: rgba(192, 132, 252, 0.32); }
+.node.reopen { border-color: var(--purple); background: radial-gradient(circle at 50% 40%, rgba(192, 132, 252, 0.4), rgba(192, 132, 252, 0.1)); color: #f6eeff; box-shadow: 0 0 0 1px rgba(192, 132, 252, 0.28), 0 0 18px rgba(192, 132, 252, 0.32); }
+.seg.reopen { background: linear-gradient(180deg, rgba(192, 132, 252, 0.85), rgba(192, 132, 252, 0.4)); }
 .kebab { position: absolute; top: 11px; right: 11px; width: 28px; height: 28px; border-radius: 8px; display: grid; place-items: center; color: var(--muted-2); }
 .kebab:hover { background: rgba(255, 255, 255, 0.08); color: var(--ink); }
 .pop { position: absolute; top: 44px; right: 11px; z-index: 20; width: 232px; display: none; background: #141821; border: 1px solid rgba(255, 255, 255, 0.1); border-radius: 13px; box-shadow: 0 20px 44px rgba(0, 0, 0, 0.55); padding: 8px; }
@@ -572,7 +585,7 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .f { margin-bottom: 13px; }
 .f label { display: block; font-size: 10px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--muted-2); margin-bottom: 5px; }
 .f input, .f select, .f textarea { width: 100%; }
-.toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 96; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; }
+.toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 96; display: flex; flex-direction: column; gap: 8px; align-items: center; pointer-events: none; max-height: 40vh; overflow: hidden; max-width: calc(100vw - 32px); }
 .toast div { background: #151b25; border: 1px solid rgba(46, 230, 197, 0.3); color: var(--ink); padding: 10px 15px; border-radius: 11px; font-size: 12.5px; box-shadow: 0 14px 34px rgba(0, 0, 0, 0.5); animation: rowIn 0.22s ease-out both; }
 
 /* Subtask checkbox and the composer's title field. */
@@ -640,20 +653,35 @@ select option, select optgroup { background-color: #141821; color: var(--ink); }
    screen readers and every `change` handler work as before. */
 @supports (appearance: base-select) {
   select, ::picker(select) { appearance: base-select; }
+  /* The arrow is pinned to the right edge with room kept for it, so a long
+     value (a project name in a narrow header) is cut short instead of
+     pushing the arrow out of the box. */
   select {
-    display: inline-flex; align-items: center; gap: 8px;
-    padding-right: 9px;
+    position: relative; display: inline-flex; align-items: center;
+    padding-right: 28px;
   }
   select:hover:not(:disabled) { background-color: rgba(255, 255, 255, 0.1); }
   select:disabled { cursor: default; opacity: 0.6; }
   select::picker-icon {
-    content: ''; width: 9px; height: 9px; margin-left: auto; flex: none;
+    content: ''; width: 9px; height: 9px; flex: none;
+    position: absolute; right: 10px; top: calc(50% - 4.5px);
     background: currentColor; color: var(--muted);
     -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 3.5 5 7l3.5-3.5' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
             mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 10'%3E%3Cpath d='M1.5 3.5 5 7l3.5-3.5' fill='none' stroke='black' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E") center / contain no-repeat;
     transition: transform 0.16s ease;
   }
   select:open::picker-icon { transform: rotate(180deg); color: var(--teal); }
+  /* The closed control's label (render.ts puts a <button><selectedcontent>
+     at the top of every select). It takes the space left of the arrow and
+     ends in "…" when the value is longer. */
+  select > button {
+    all: unset; display: block; flex: 1 1 auto; min-width: 0;
+    overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  }
+  select > button selectedcontent { display: inline; }
+  /* Smaller selects set their own padding; keep the arrow's room there too. */
+  .mrow select, .composer select { padding-right: 24px; }
+  .mrow select::picker-icon, .composer select::picker-icon { right: 8px; }
   select:open { border-color: rgba(46, 230, 197, 0.45); }
 
   ::picker(select) {
