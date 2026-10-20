@@ -318,44 +318,6 @@ body.booting .top, body.booting .sub, body.booting .wrap, body.booting .fab { di
 .emptychain .et { font-size: 15.5px; font-weight: 600; margin-bottom: 8px; }
 .emptychain .ed { font-size: 12.5px; color: var(--muted); max-width: 420px; margin: 0 auto 20px; line-height: 1.65; }
 
-@media (max-width: 720px) {
-  .wrap { padding: 0 14px 90px; }
-  .top-in { padding: 12px 14px; gap: 10px; }
-  .sub { padding: 14px 14px 0; gap: 14px; }
-  /* Mobile: brand and the right-hand cluster on row one, controls below. */
-  .top-in { flex-wrap: wrap; row-gap: 8px; }
-  .top-in > .brand { order: 1; }
-  .top-in > .live { order: 2; margin-left: auto; }
-  .top-in > .menu { order: 3; }
-  .top-in > .hp { display: none; }
-  .top-in > .ctrls {
-    order: 4; flex: 1 1 100%; justify-content: flex-start;
-    display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
-  }
-  .ctrls select { max-width: none; width: 100%; }
-  .row { grid-template-columns: 34px 1fr; padding-bottom: 20px; }
-  .date { display: none; }
-  .rail { width: 34px; }
-  .node { width: 30px; height: 30px; }
-  .node svg { width: 13px; height: 13px; }
-  .seg { top: 35px; }
-  .card { padding: 13px 13px 14px; }
-  .card h3 { font-size: 14.5px; }
-  .addend { margin-left: 0; }
-  .composer .fgrid { grid-template-columns: 1fr 1fr; }
-  .inline-date { display: inline-flex !important; }
-  .pop { right: 8px; width: calc(100% - 16px); }
-  .top-in.scrolled .hp .hpbar { width: 62px; }
-  .top-in.scrolled .hp .hplbl { display: none; }
-  .fab { right: 16px; bottom: 16px; width: 50px; height: 50px; }
-  .chat { right: 12px; left: 12px; bottom: 78px; width: auto; height: min(72vh, 500px); }
-  .dragghost .gt { max-width: 200px; }
-  .wopts { grid-template-columns: 1fr; }
-  .wcard h2 { font-size: 25px; }
-  .welcome { padding: 18px; }
-  .emptychain { padding: 26px 16px; }
-  .top-in.scrolled .hide-scroll { display: none; }
-}
 
 .inline-date { display: none; font-size: 10.5px; color: var(--muted-2); align-items: center; gap: 5px; }
 
@@ -773,4 +735,122 @@ select option, select optgroup { background-color: #141821; color: var(--ink); }
      off the left edge. The width left is the screen less both 14px gutters,
      the ⋯ button (41px) and the 10px gap before it. */
   .top .pop.live, .top .pop.notifs { max-width: calc(100vw - 79px); }
+}
+
+/* ---------- phones ----------
+   Kept at the end of the file: the chain and card rules above are the
+   desktop defaults, and these must come after them to override them. */
+@media (max-width: 720px) {
+  .wrap { padding: 0 14px 90px; }
+  .top-in { padding: 12px 14px; gap: 10px; }
+  .sub { padding: 14px 14px 0; gap: 14px; }
+  /* Mobile: brand and the right-hand cluster on row one, controls below. */
+  .top-in { flex-wrap: wrap; row-gap: 8px; }
+  .top-in > .brand { order: 1; }
+  .top-in > .live { order: 2; margin-left: auto; }
+  .top-in > .menu { order: 3; }
+  .top-in > .hp { display: none; }
+  .top-in > .ctrls {
+    order: 5; flex: 1 1 100%; justify-content: flex-start;
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;
+  }
+  .ctrls select { max-width: none; width: 100%; }
+  .ctrls .fld { min-width: 0; }
+  .ctrls .btn { width: 100%; }
+  .row { grid-template-columns: 34px 1fr; padding-bottom: 20px; }
+  .date { display: none; }
+  .rail { width: 34px; }
+  .node { width: 30px; height: 30px; }
+  .node svg { width: 13px; height: 13px; }
+  .seg { top: 35px; }
+  .card { padding: 13px 13px 14px; }
+  .card h3 { font-size: 14.5px; }
+  .addend { margin-left: 0; }
+  .composer .fgrid { grid-template-columns: 1fr 1fr; }
+  .inline-date { display: inline-flex !important; }
+  .pop { right: 8px; width: calc(100% - 16px); }
+  .top-in.scrolled .hp .hpbar { width: 62px; }
+  .top-in.scrolled .hp .hplbl { display: none; }
+  .fab { right: 16px; bottom: 16px; width: 50px; height: 50px; }
+  .chat { right: 12px; left: 12px; bottom: 78px; width: auto; height: min(72vh, 500px); }
+  .dragghost .gt { max-width: 200px; }
+  .wopts { grid-template-columns: 1fr; }
+  .wcard h2 { font-size: 25px; }
+  .welcome { padding: 18px; }
+  .emptychain { padding: 26px 16px; }
+  .top-in.scrolled .hide-scroll { display: none; }
+  .hint { font-size: 11.5px; }
+}
+
+/* ---------- every width ----------
+   A grid or flex child defaults to "never narrower than my content", so one
+   long title or row of chips could push the card, and the page, wider than
+   the screen. Let them shrink and wrap instead. */
+html, body { overflow-x: clip; }
+.row > .card, .sub > *, .progbox { min-width: 0; }
+.card h3, .desc { overflow-wrap: anywhere; }
+.chead { flex-wrap: wrap; row-gap: 6px; }
+/* A select shows its value on one line; a long project name is cut short
+   rather than doubling the control's height. */
+select { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+
+/* ---------- tablets and small laptops (721–900px) ----------
+   One row no longer fits brand, both pickers, both buttons, progress, menu,
+   live chip and account. Brand and the right-hand cluster stay on row one;
+   the pickers and buttons get a full-width row of their own. */
+@media (min-width: 721px) and (max-width: 900px) {
+  .top-in { flex-wrap: wrap; row-gap: 10px; }
+  .top-in > .brand { order: 1; margin-right: auto; }
+  .top-in > .hp { order: 2; }
+  .top-in > .menu { order: 3; }
+  .top-in > .live { order: 4; }
+  .top-in > .acct { order: 5; }
+  .top-in > .ctrls { order: 6; flex: 1 1 100%; }
+  .ctrls .fld { flex: 1 1 0; }
+  .ctrls select { max-width: none; width: 100%; }
+  /* "Signed in" loses its caption so it sits on row one's line. */
+  .acct .fld { grid-template-rows: 34px; }
+  .acct .fld > span { display: none; }
+  .wrap, .sub { padding-left: 18px; padding-right: 18px; }
+}
+
+/* ---------- small phones and folded foldables (≤ 380px) ---------- */
+@media (max-width: 380px) {
+  .top-in { padding: 10px 12px; gap: 8px; }
+  .wrap { padding: 0 10px 90px; }
+  .sub { padding: 12px 12px 0; }
+  .brand { font-size: 14px; gap: 7px; }
+  /* The live chip keeps its coloured dot and counts; the word goes. */
+  .livechip { padding: 5px 9px; }
+  .livechip > span:not(.livecount) { display: none; }
+  .row { grid-template-columns: 28px minmax(0, 1fr); }
+  .rail { width: 28px; }
+  .node { width: 26px; height: 26px; }
+  .seg { top: 31px; }
+  .card { padding: 12px 11px 13px; }
+  .pct { font-size: 22px; }
+  .composer .fgrid { grid-template-columns: 1fr; }
+  .composer .fld[style*="span 2"] { grid-column: auto !important; }
+}
+
+/* Card head: the ⋮ menu is pinned to the card's top-right corner, so the key
+   and tags leave room for it instead of running underneath. */
+.card > .chead { padding-right: 34px; }
+
+/* Phones and tablets: the wrapped header is tall. While scrolling down only
+   its first row (brand, live chip, ⋯) stays; the pickers and buttons hide
+   and come back on scroll up (app.ts `tuckHeader`). The header is fixed and
+   the body keeps a spacer of its full height (--headh, measured in app.ts),
+   so hiding the controls never moves the page underneath. */
+@media (max-width: 900px) {
+  header.top { position: fixed; left: 0; right: 0; top: 0; }
+  body { padding-top: var(--headh, 0px); }
+  header.top.tucked .top-in > .ctrls { display: none; }
+  header.top.tucked .top-in { row-gap: 0; }
+}
+
+/* Very narrow (Galaxy Fold folded, 280px): pickers stack. */
+@media (max-width: 320px) {
+  .top-in > .ctrls { grid-template-columns: minmax(0, 1fr); }
+  .ctrls > div.fld:only-of-type { grid-column: auto; }
 }

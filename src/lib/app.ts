@@ -755,11 +755,51 @@ export class BlackitFlowApp {
   /* ------------------------------ scroll ------------------------------- */
 
   scrollState(): void {
+    this.tuckHeader();
     const next = window.scrollY > 130;
     if (next === this.scrolled) return;
     this.scrolled = next;
     document.querySelector('.top-in')?.classList.toggle('scrolled', next);
     if (next) this.animateHeadProgress();
+  }
+
+  /**
+   * On narrow screens the header is tall (its controls wrap onto extra rows),
+   * so while scrolling down only its first row stays and the controls hide;
+   * any scroll up brings them back. The header is fixed there and the body
+   * keeps a spacer of the full header height, so the page never jumps.
+   * Wide screens ignore the class; see `header.top.tucked` in flow.css.
+   */
+  private lastScrollY = 0;
+  private headerSized = false;
+
+  /** Keeps `--headh` equal to the full (untucked) header height. */
+  private sizeHeader(header: HTMLElement): void {
+    if (this.headerSized || typeof ResizeObserver === 'undefined') return;
+    this.headerSized = true;
+    const measure = () => {
+      if (header.classList.contains('tucked')) return;
+      document.documentElement.style.setProperty('--headh', `${header.offsetHeight}px`);
+    };
+    new ResizeObserver(measure).observe(header);
+    measure();
+  }
+
+  private tuckHeader(): void {
+    const header = document.querySelector<HTMLElement>('header.top');
+    if (!header) return;
+    this.sizeHeader(header);
+    const y = Math.max(0, window.scrollY);
+    const dy = y - this.lastScrollY;
+    // Ignore tiny moves so a resting finger does not make it flicker.
+    if (Math.abs(dy) < 6) return;
+    this.lastScrollY = y;
+    // Keep it in view while one of its menus is open or a control has focus,
+    // and near the top of the page.
+    const busy =
+      header.querySelector('.pop.on') !== null || header.contains(document.activeElement) || this.drag?.active;
+    const tuck = dy > 0 && y > header.offsetHeight && !busy;
+    header.classList.toggle('tucked', tuck);
   }
 
   private animateHeadProgress(): void {
