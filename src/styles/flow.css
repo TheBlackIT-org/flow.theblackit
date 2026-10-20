@@ -882,3 +882,35 @@ select { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-wid
   .top-in > .ctrls { grid-template-columns: minmax(0, 1fr); }
   .ctrls > div.fld:only-of-type { grid-column: auto; }
 }
+
+/* ---------- header top row on phones, foldables and tablets ----------
+   Brand on the left; bell + live chip, ⋯ and the account on the right, all
+   centred on one line. The account's "Signed in" caption made it taller than
+   the rest, which threw the row out of line, so it goes here. */
+@media (max-width: 900px) {
+  .top-in > .brand,
+  .top-in > .hp,
+  .top-in > .menu,
+  .top-in > .live,
+  .top-in > .acct { align-self: center; }
+  .top-in > .brand { order: 1; margin-right: auto; }
+  .top-in > .live { order: 2; margin-left: 0; }
+  .top-in > .menu { order: 3; }
+  .top-in > .acct { order: 4; margin-left: 0; }
+  .acct .fld { display: flex; gap: 0; }
+  .acct .fld > span { display: none; }
+  .acct .mchip { height: 34px; }
+}
+/* Phones: the account shrinks to its avatar so the row fits on one line. */
+@media (max-width: 560px) {
+  .acct .mchip { padding: 0; width: 34px; justify-content: center; border-radius: 50%; }
+  .acct .mchip b { display: none; }
+  .acct .mchip .av { width: 26px; height: 26px; }
+}
+/* Small phones and folded foldables: tighter spacing, and the live chip is
+   just its dot (see the 380px block). */
+@media (max-width: 380px) {
+  .top-in { column-gap: 6px; }
+  .livewrap { gap: 6px; }
+  .top-in > .menu > .btn { padding: 0 10px; }
+}
